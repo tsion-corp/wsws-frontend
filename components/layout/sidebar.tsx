@@ -15,6 +15,9 @@ import { MARKET_SQUARE_HIDDEN } from "@/lib/market-square";
 import { SQUARE_ZONE_PATH, openSquareZone } from "@/lib/square-zone";
 import { AccountPopover } from "@/components/layout/account-popover";
 import { ShineSheet } from "@/components/shine/shine-sheet";
+import { ArkIdCard } from "@/features/bns/components/ark-id-card";
+import { ArkIdModal } from "@/features/bns/components/ark-id-modal";
+import { useArkIdDialogOpen, closeArkIdDialog } from "@/lib/bns/ark-id-dialog-store";
 
 interface SidebarProps {
   items: NavItem[];
@@ -51,6 +54,7 @@ export function Sidebar({ items, activeSection, onNavigate, open, onClose }: Sid
   // click, and the sheet would go with it the moment somebody reached for a
   // switch inside it.
   const [shineOpen, setShineOpen] = useState(false);
+  const arkIdOpen = useArkIdDialogOpen();
   const profileButtonRef = useRef<HTMLButtonElement>(null);
 
   // While the drawer is open the page behind it does not scroll, and Escape
@@ -203,6 +207,7 @@ export function Sidebar({ items, activeSection, onNavigate, open, onClose }: Sid
         </nav>
 
         <div className="relative mt-auto shrink-0">
+          <ArkIdCard />
           <button
             ref={profileButtonRef}
             type="button"
@@ -241,6 +246,7 @@ export function Sidebar({ items, activeSection, onNavigate, open, onClose }: Sid
           />
         </div>
       </aside>
+      <ArkIdModal open={arkIdOpen} onClose={closeArkIdDialog} />
     </>
   );
 }
