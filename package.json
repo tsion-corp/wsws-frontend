@@ -28,7 +28,8 @@
     "bundle:report": "node scripts/first-load.mjs",
     "bundle:check": "node scripts/first-load.mjs --check",
     "prepare": "husky",
-    "legacy:hash": "node scripts/hash-legacy-directory.mjs"
+    "legacy:hash": "node scripts/hash-legacy-directory.mjs",
+    "registry:chains": "node scripts/gen-registry-chains.mjs"
   },
   "dependencies": {
     "@badrap/result": "^0.3.1",
@@ -54,7 +55,7 @@
     "canvas-confetti": "^1.9.4",
     "chess.js": "^1.4.0",
     "clsx": "^2.1.1",
-    "decane-connect-kit": "^2.24.0",
+    "decane-connect-kit": "^2.27.0",
     "decane-node": "^1.4.0",
     "driver.js": "^1.8.0",
     "embla-carousel-react": "^8.6.0",

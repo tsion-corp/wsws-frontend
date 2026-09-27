@@ -13,11 +13,9 @@ import { useVaultLobby } from "@/features/casino/hooks/use-vault-lobby";
 import { GameCard } from "@/features/casino/components/last-standing/game-card";
 import { StartGameSheet } from "@/features/casino/components/last-standing/start-game-sheet";
 import { LAST_MAN_START_LIVE } from "@/features/casino/lib/last-standing/start-gate";
-import {
-  canStartPublic,
-  lobbyGames,
-  privateGameIds,
-} from "@/features/casino/lib/last-standing/visibility";
+import { privateGameIds } from "@/features/casino/lib/last-standing/visibility";
+import { publicGames } from "@/features/casino/lib/vault-game";
+import type { VaultGame } from "@/features/casino/lib/vault-api";
 import { usePayoutRefresh } from "@/features/casino/hooks/use-payout-refresh";
 import { LeaderboardBoard } from "@/features/casino/components/last-standing/leaderboard-board";
 import { HowItWorks } from "@/features/casino/components/last-standing/how-it-works";
@@ -53,14 +51,7 @@ export function LastStandingLobby() {
   // re-renders on every socket tick, and this reads localStorage and parses
   // JSON. The store only changes when this browser starts a private game,
   // which refreshes the list too, so the list is a sound trigger.
-  const { games, lobbySlotFree } = useMemo(() => {
-    const hidden = privateGameIds();
-    return {
-      // The lobby holds one slot. Everything else running is link-only.
-      games: lobbyGames(allGames, hidden),
-      lobbySlotFree: canStartPublic(allGames, hidden),
-    };
-  }, [allGames]);
+  const games = useMemo(() => publicGames(allGames, privateGameIds()), [allGames]);
 
   const [startOpen, setStartOpen] = useState(false);
   // Every settled game, for the history. The same feed the game pages scope
@@ -177,10 +168,10 @@ export function LastStandingLobby() {
                     of the lobby to a screenful. Ink rather than white: the
                     ground is bright and white fails contrast at every size. */}
                 <p className="mt-2 text-[14px] leading-[1.35] font-bold text-[#3a2400]">
-                  {lobbySlotFree ? t("starterPitchTitle") : t("starterPitchTitlePrivate")}
+                  {t("starterPitchTitle")}
                 </p>
                 <p className="mt-1 text-[12.5px] leading-[1.45] font-medium text-[#4a2f00]/80">
-                  {lobbySlotFree ? t("starterPitchBody") : t("starterPitchBodyPrivate")}
+                  {t("starterPitchBody")}
                 </p>
               </div>
 
@@ -245,14 +236,18 @@ export function LastStandingLobby() {
             </p>
           ) : null}
 
-          <div className="mt-3 flex flex-col gap-2">
+          {/* One game to a row on a phone, three across from lg up. A single
+              live game used to stretch the full width of a desk, which made
+              one row look like a page. The states below span every column:
+              an error or an empty lobby is about the whole list, not a cell. */}
+          <div className="mt-3 grid grid-cols-1 gap-2 lg:grid-cols-3">
             {gamesLoading ? (
               // Fixed-height skeletons so the list does not jump when they resolve.
               Array.from({ length: 3 }, (_, i) => (
                 <div key={i} className="ws-inset h-[86px] animate-pulse bg-white/[0.03]" />
               ))
             ) : gamesError ? (
-              <div className="ws-inset px-4 py-6 text-center">
+              <div className="ws-inset px-4 py-6 text-center lg:col-span-3">
                 <p className="text-[13.5px] font-normal text-white/60">{t("lobbyError")}</p>
                 <button
                   type="button"
@@ -263,14 +258,14 @@ export function LastStandingLobby() {
                 </button>
               </div>
             ) : games.length === 0 ? (
-              <div className="ws-inset px-4 py-8 text-center">
+              <div className="ws-inset px-4 py-8 text-center lg:col-span-3">
                 <p className="text-[14px] font-medium text-white">{t("lobbyEmptyTitle")}</p>
                 <p className="mt-1.5 text-[13px] leading-relaxed font-normal text-white/55">
                   {t("lobbyEmptyBody")}
                 </p>
               </div>
             ) : (
-              games.map((game) => (
+              games.map((game: VaultGame) => (
                 <GameCard key={game.gameId} game={game} address={address} formatUsd={formatUsd} />
               ))
             )}
@@ -302,11 +297,6 @@ export function LastStandingLobby() {
 
       <ModalShell open={startOpen} onClose={() => setStartOpen(false)}>
         <StartGameSheet
-          canStartPublic={lobbySlotFree}
-          ensureCanStart={async () => {
-            const fresh = await refetchGames();
-            return canStartPublic(fresh.data ?? [], privateGameIds());
-          }}
           onClose={() => setStartOpen(false)}
           onStarted={resync}
           formatUsd={formatUsd}

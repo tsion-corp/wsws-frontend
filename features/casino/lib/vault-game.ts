@@ -64,10 +64,35 @@ function readMetadata(value: unknown): { title?: string; description?: string } 
 // a label.
 export function onlyVaultGames(value: unknown): VaultGame[] {
   if (!Array.isArray(value)) return [];
-  return value.filter(isVaultGame).map((game) => ({
-    ...game,
-    ...readMetadata((game as unknown as Record<string, unknown>).metadata),
-  }));
+  return value.filter(isVaultGame).map((game) => {
+    const raw = game as unknown as Record<string, unknown>;
+    return {
+      ...game,
+      // Only a literal true is private. An absent or malformed flag reads as
+      // public, because the failure that matters is a public game vanishing
+      // from the lobby, not a private one appearing in it.
+      isPrivate: raw.isPrivate === true,
+      ...readMetadata(raw.metadata),
+    };
+  });
+}
+
+/**
+ * The games the lobby may list.
+ *
+ * `locallyPrivate` is the starter's own record of what they chose. A private
+ * game can reach this client before the reconciler has indexed its
+ * GamePrivacySet log, and until it does the row honestly says public; without
+ * that record the game flashes into everybody's lobby for a few seconds.
+ * It only ever hides, never reveals, so one browser's list cannot expose
+ * somebody else's game.
+ */
+export function publicGames<T extends { gameId: number; isPrivate?: boolean }>(
+  games: readonly T[],
+  locallyPrivate: readonly number[] = []
+): T[] {
+  const mine = new Set(locallyPrivate);
+  return games.filter((game) => game.isPrivate !== true && !mine.has(game.gameId));
 }
 
 /** What to call a game: its name, or its number when it has none. */
@@ -222,4 +247,47 @@ export function sortGameRows(rows: unknown[]): {
     else dropped += 1;
   }
   return { api, chain, dropped };
+}
+
+/**
+ * Carries a name the client already knows onto rows that arrive without one.
+ *
+ * The keeper builds its lobby snapshot with `toGameDto(game, usd)` — two
+ * arguments, where the third is the metadata — so a socket frame never carries
+ * a title. The snapshot replaces the games cache wholesale, which is correct
+ * for everything it DOES carry (a game missing from it has settled or gone
+ * away) and wrong for the one thing it does not: absent here means "not sent",
+ * not "cleared", and treating the two the same wiped a game's name a second
+ * after REST had loaded it.
+ *
+ * The snapshot still decides which games exist, so nothing is resurrected: a
+ * name is only ever carried onto a row the snapshot itself listed.
+ */
+export function keepKnownMetadata<
+  T extends { gameId: number; title?: string; description?: string; isPrivate?: boolean },
+>(previous: readonly T[], incoming: readonly T[]): T[] {
+  if (previous.length === 0) return [...incoming];
+  const known = new Map(previous.map((game) => [game.gameId, game]));
+  return incoming.map((game) => {
+    const before = known.get(game.gameId);
+    if (before === undefined) return game;
+
+    // Private latches. A stale keeper reports every game public over the
+    // socket, so a flag that contradicts what we know is refused: the wrong
+    // direction is exposure. A missing name is carried across instead.
+    const isPrivate = before.isPrivate === true ? true : game.isPrivate;
+    const keepsTitle = game.title === undefined && before.title !== undefined;
+    if (!keepsTitle && isPrivate === game.isPrivate) return game;
+
+    return {
+      ...game,
+      ...(isPrivate === undefined ? {} : { isPrivate }),
+      ...(keepsTitle
+        ? {
+            title: before.title,
+            ...(before.description === undefined ? {} : { description: before.description }),
+          }
+        : {}),
+    };
+  });
 }

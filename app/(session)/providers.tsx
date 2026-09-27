@@ -3,6 +3,7 @@
 import { useQueryClient } from "@tanstack/react-query";
 import dynamic from "next/dynamic";
 import { DecaneKit } from "decane-connect-kit";
+import { decaneRpcUrls } from "@/lib/trade/decane-rpc-urls";
 import { returningFromPrivyOAuth } from "@/features/migrate/lib/oauth-return";
 import { useDecaneCredentials } from "@/hooks/use-decane-credentials";
 // Staging (post-Decane-fork) addition: fans Polymarket query invalidations
@@ -123,6 +124,18 @@ export function SessionProviders({ children }: { children: React.ReactNode }) {
           apiKey: decane.apiKey,
           authMethods: ["google", "email", "kingschat", "x"],
           chains: DECANE_CHAINS,
+          // Every readable EVM chain, for the kit's own user-paid send. Without
+          // these a sell of HYPE, APE or MON failed before signing: the kit
+          // only knows the majors' RPCs (see lib/trade/decane-rpc-urls).
+          rpcUrls: decaneRpcUrls(),
+          // Keep the session across tabs, not just across reloads. Without it
+          // closing the tab reads as being signed out, which is most of what
+          // people meant by "it signs me out too quickly" — the enclave session
+          // is still valid for hours at that point.
+          //
+          // The trade: the session handle is the signing credential, so this
+          // widens where it can be read from one tab to the whole origin.
+          resumeSessionAcrossTabs: true,
           // The kit's own full-screen "Creating your wallet" overlay is off:
           // the sign-in page shows its branded busy panel for the creating
           // window (it is where the Google redirect lands), and AuthGuard's
