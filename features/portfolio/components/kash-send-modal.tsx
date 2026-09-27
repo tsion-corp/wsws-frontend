@@ -164,8 +164,8 @@ export function KashSendModal({ open, onClose }: KashSendModalProps) {
                   </p>
                 ) : recipientName && resolvedAddress ? (
                   <p className="text-up mt-1.5 text-[12px] font-normal">
-                    {t("sendArkResolved", { name: recipientName })} {resolvedAddress.slice(0, 6)}…
-                    {resolvedAddress.slice(-4)}
+                    {t("sendArkResolved", { name: recipientName })}{" "}
+                    <span className="font-mono break-all">{resolvedAddress}</span>
                   </p>
                 ) : recipientName && (resolution.isError || resolution.isSuccess) ? (
                   <div className="mt-1.5 flex flex-wrap items-baseline gap-x-1 text-[12px] font-normal">
