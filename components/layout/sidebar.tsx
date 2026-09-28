@@ -1,5 +1,7 @@
 "use client";
 
+import dynamic from "next/dynamic";
+
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useTranslations } from "next-intl";
@@ -15,9 +17,19 @@ import { MARKET_SQUARE_HIDDEN } from "@/lib/market-square";
 import { SQUARE_ZONE_PATH, openSquareZone } from "@/lib/square-zone";
 import { AccountPopover } from "@/components/layout/account-popover";
 import { ShineSheet } from "@/components/shine/shine-sheet";
+import { ModalLoading } from "@/components/layout/modals/modal-loading";
 import { ArkIdCard } from "@/features/bns/components/ark-id-card";
-import { ArkIdModal } from "@/features/bns/components/ark-id-modal";
 import { useArkIdDialogOpen, closeArkIdDialog } from "@/lib/bns/ark-id-dialog-store";
+
+// Dynamic, like every modal in app-modals.tsx: the Ark ID modal pulls viem and
+// the send/deposit hooks, and the sidebar is in the shell on every route. Imported
+// statically it put all of that in the initial payload of the whole app, which
+// took ten routes over their first-load budget. It only renders once someone
+// opens the dialog.
+const ArkIdModal = dynamic(
+  () => import("@/features/bns/components/ark-id-modal").then((m) => m.ArkIdModal),
+  { ssr: false, loading: () => <ModalLoading /> }
+);
 
 interface SidebarProps {
   items: NavItem[];
