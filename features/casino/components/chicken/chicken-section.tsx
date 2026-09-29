@@ -8,6 +8,7 @@ import { useMoney } from "@/components/ui/currency-select";
 import type { ChickenDifficulty, ChickenSession } from "@/features/casino/lib/api/arkjet";
 import { useChicken } from "@/features/casino/hooks/use-chicken";
 import { gameActionError } from "@/features/casino/lib/game-error";
+import { sampleTrafficPass } from "@/features/casino/lib/chicken-traffic";
 import { usePortfolio } from "@/hooks/use-portfolio";
 import { fromBaseUnits } from "@/lib/trade/math";
 import { amountUnits, normalizeArkjetAmount, stepArkjetAmount } from "../../lib/arkjet-funding";
@@ -69,28 +70,34 @@ function collisionPlaneTexture(resultHash: string) {
   return PLANES[(Number.isFinite(hashValue) ? hashValue : 0) % PLANES.length];
 }
 
-function LanePlane() {
-  const [plane, setPlane] = useState({ visible: false, texture: 0, pass: 0 });
+function LanePlane({ muted }: { muted: boolean }) {
+  const [plane, setPlane] = useState({
+    durationMs: 500,
+    pass: 0,
+    reverse: false,
+    texture: 0,
+    visible: false,
+  });
 
   useEffect(() => {
     let timer: number | undefined;
     let flight: number | undefined;
 
     const schedule = () => {
-      timer = window.setTimeout(
-        () => {
-          setPlane((current) => ({
-            visible: true,
-            texture: Math.floor(Math.random() * PLANES.length),
-            pass: current.pass + 1,
-          }));
-          flight = window.setTimeout(() => {
-            setPlane((current) => ({ ...current, visible: false }));
-            schedule();
-          }, 500);
-        },
-        Math.floor(100 + Math.random() * 3_900)
-      );
+      const next = sampleTrafficPass(PLANES.length);
+      timer = window.setTimeout(() => {
+        setPlane((current) => ({
+          durationMs: next.durationMs,
+          pass: current.pass + 1,
+          reverse: next.reverse,
+          texture: next.textureIndex,
+          visible: true,
+        }));
+        flight = window.setTimeout(() => {
+          setPlane((current) => ({ ...current, visible: false }));
+          schedule();
+        }, next.durationMs);
+      }, next.delayMs);
     };
 
     schedule();
@@ -105,8 +112,11 @@ function LanePlane() {
     // eslint-disable-next-line @next/next/no-img-element
     <img
       key={plane.pass}
-      className={styles.plane}
+      className={`${styles.plane} ${plane.reverse ? styles.planeReverse : ""} ${
+        muted ? styles.planeMuted : ""
+      }`}
       src={`${ASSET}/img/${PLANES[plane.texture]}@2x.png`}
+      style={{ "--plane-duration": `${plane.durationMs}ms` } as CSSProperties}
       alt=""
     />
   );
@@ -197,11 +207,7 @@ export function ChickenSection() {
         : phase === "waiting"
           ? "Idle Active"
           : "Start";
-  const stageMessage =
-    notice ??
-    (activeSession?.liquidityCrashStep
-      ? `Cash out by step ${activeSession.maximumPayableStep}. Step ${activeSession.liquidityCrashStep} is the liquidity limit.`
-      : null);
+  const stageMessage = notice;
   const worldStyle = {
     "--world-transition": ["lost-reset", "won-reset"].includes(phase)
       ? `${WORLD_RESET_MS}ms`
@@ -529,19 +535,16 @@ export function ChickenSection() {
                         <span>{(hundredths / 100).toFixed(2)}x</span>
                       </div>
                     ) : null}
-                    {traffic ? (
-                      traffic.collision ? (
-                        // eslint-disable-next-line @next/next/no-img-element
-                        <img
-                          key={traffic.key}
-                          className={`${styles.plane} ${styles.collisionPlane}`}
-                          src={`${ASSET}/img/${traffic.texture}@2x.png`}
-                          alt=""
-                        />
-                      ) : null
-                    ) : (
-                      <LanePlane />
-                    )}
+                    <LanePlane muted={Boolean(traffic)} />
+                    {traffic?.collision ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img
+                        key={traffic.key}
+                        className={`${styles.plane} ${styles.collisionPlane}`}
+                        src={`${ASSET}/img/${traffic.texture}@2x.png`}
+                        alt=""
+                      />
+                    ) : null}
                   </div>
                 );
               })}

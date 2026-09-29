@@ -362,11 +362,20 @@
   transform: translate(-50%, -100%);
   object-fit: contain;
   filter: drop-shadow(0 7px 4px rgba(0, 0, 0, 0.3));
-  animation: planePass 0.5s linear both;
+  animation: planePass var(--plane-duration, 500ms) linear both;
+  transition: opacity 80ms linear;
+}
+.planeReverse {
+  animation-direction: reverse;
+}
+.planeMuted {
+  opacity: 0;
 }
 .collisionPlane {
   z-index: 6;
   animation-duration: 0.25s;
+  animation-direction: normal;
+  opacity: 1;
 }
 @keyframes planePass {
   from {
