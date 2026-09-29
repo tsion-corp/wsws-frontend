@@ -75,6 +75,27 @@
   height: 32px;
   object-fit: contain;
 }
+.howToPlayTag {
+  height: 26px;
+  margin-left: 10px;
+  border: 1px solid #343434;
+  border-radius: 999px;
+  background: #1f1f1f;
+  padding: 0 9px;
+  color: #a7a7a7;
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.howToPlayTag:hover {
+  border-color: #36c466;
+  color: #fff;
+}
+.howToPlayTag:focus-visible {
+  outline: 2px solid #36c466;
+  outline-offset: 2px;
+}
 .headerRight {
   display: flex;
   align-items: center;
@@ -272,7 +293,7 @@
 }
 .checkpoint {
   position: absolute;
-  z-index: 2;
+  z-index: 4;
   top: calc(50% + var(--lane-width) * 0.717949);
   left: 50%;
   width: calc(var(--lane-width) * 0.641026);
@@ -332,8 +353,8 @@
   position: absolute;
   z-index: 2;
   top: 0;
-  left: 50%;
-  width: clamp(88px, 9vw, 140px);
+  left: 0;
+  width: clamp(54px, calc(var(--lane-width) * 0.46), 90px);
   height: auto;
   transform: translate(-50%, -100%);
   object-fit: contain;
@@ -342,6 +363,7 @@
 }
 .collisionPlane {
   z-index: 6;
+  animation-duration: 0.25s;
 }
 @keyframes planePass {
   from {
@@ -770,5 +792,10 @@ button.menuRow {
   }
   .stats {
     max-width: 170px;
+  }
+  .howToPlayTag {
+    margin-left: 6px;
+    padding-inline: 7px;
+    font-size: 9px;
   }
 }

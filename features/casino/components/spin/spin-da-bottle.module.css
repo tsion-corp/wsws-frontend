@@ -305,7 +305,7 @@
 
 .betAmount {
   display: flex;
-  width: 120px;
+  width: 164px;
   height: 32px;
   align-items: center;
   justify-content: center;
@@ -323,7 +323,7 @@
 }
 
 .betAmount input {
-  width: 48px;
+  width: 72px;
   min-width: 0;
   padding: 0;
   border: 0;
@@ -331,6 +331,12 @@
   color: #fff;
   background: transparent;
   font: inherit;
+  font-weight: 700;
+}
+
+.betAmount small {
+  color: rgb(255 255 255 / 72%);
+  font-size: 9px;
   font-weight: 700;
 }
 

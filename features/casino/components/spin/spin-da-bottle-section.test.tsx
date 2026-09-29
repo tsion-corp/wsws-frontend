@@ -34,12 +34,67 @@ const mockChat = vi.hoisted(() => ({
   toggleLike: vi.fn(),
 }));
 
+const mockModals = vi.hoisted(() => ({
+  openFunds: vi.fn(),
+  close: vi.fn(),
+  showDone: vi.fn(),
+}));
+
+const mockMoney = vi.hoisted(() => {
+  const state = { currency: { code: "USD" }, ready: true };
+  const converted = (value: number) => (state.currency.code === "NGN" ? value * 1_600 : value);
+  const symbol = () => (state.currency.code === "NGN" ? "₦" : "$");
+  return {
+    ...state,
+    format: (value: number) => {
+      const amount = converted(value);
+      if (amount >= 1_000_000) return `${symbol()}${Number((amount / 1_000_000).toFixed(2))}M`;
+      if (amount >= 10_000) return `${symbol()}${Number((amount / 1_000).toFixed(2))}K`;
+      return `${symbol()}${state.currency.code === "NGN" ? amount.toFixed(0) : amount.toFixed(2)}`;
+    },
+    formatExact: (value: number) => {
+      const amount = converted(value);
+      return `${symbol()}${amount.toLocaleString("en-US", {
+        minimumFractionDigits: state.currency.code === "NGN" ? 0 : 2,
+        maximumFractionDigits: state.currency.code === "NGN" ? 0 : 2,
+      })}`;
+    },
+    toInput: (value: number) => converted(value).toFixed(state.currency.code === "NGN" ? 0 : 2),
+    fromInput: (value: string) => {
+      const parsed = Number(value);
+      if (!Number.isFinite(parsed) || parsed <= 0) return null;
+      return state.currency.code === "NGN" ? parsed / 1_600 : parsed;
+    },
+  };
+});
+
 vi.mock("@/features/casino/hooks/use-spin-da-bottle", () => ({
   useSpinDaBottle: () => mockGame,
 }));
 
 vi.mock("@/features/casino/hooks/use-spin-comments", () => ({
   useSpinComments: () => mockChat,
+}));
+
+vi.mock("@/hooks/use-portfolio", () => ({
+  usePortfolio: () => ({
+    loading: false,
+    tokens: [{ network: "base-mainnet", symbol: "USDC", rawBalance: "1000000" }],
+  }),
+}));
+
+vi.mock("@/components/layout/modals/app-modals", () => ({
+  useAppModals: () => ({
+    modal: null,
+    openFunds: mockModals.openFunds,
+    close: mockModals.close,
+    showDone: mockModals.showDone,
+  }),
+  AppModalHost: () => null,
+}));
+
+vi.mock("@/components/ui/currency-select", () => ({
+  useMoney: () => mockMoney,
 }));
 
 vi.mock("@/features/casino/components/arkjet/arkjet-cashier", () => ({
@@ -54,6 +109,7 @@ describe("SpinDaBottleSection", () => {
   beforeEach(() => {
     localStorage.clear();
     vi.clearAllMocks();
+    mockMoney.currency.code = "USD";
     Object.defineProperty(window, "innerWidth", { configurable: true, value: 1024 });
     Object.defineProperty(window, "innerHeight", { configurable: true, value: 768 });
   });
@@ -98,11 +154,23 @@ describe("SpinDaBottleSection", () => {
   it("uses a reachable 20K maximum stake preset independent of wallet balance", () => {
     render(<SpinDaBottleSection />);
 
-    expect(screen.getByText("Max : 20K")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Set bet to 20K" }));
+    expect(screen.getByText("Max : $20K")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Set bet to $20K" }));
     expect(screen.getByLabelText("Bet amount")).toHaveValue("20000.00");
     fireEvent.click(screen.getByRole("button", { name: "UP" }));
-    expect(screen.getByText("Bet amount exceeds wallet balance.")).toBeInTheDocument();
+    expect(mockModals.openFunds).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows NGN everywhere while keeping the maximum wager in canonical USDC", () => {
+    mockMoney.currency.code = "NGN";
+    render(<SpinDaBottleSection />);
+
+    expect(screen.getByText("₦25,216")).toBeInTheDocument();
+    expect(screen.getByText("Max : ₦32M")).toBeInTheDocument();
+    expect(screen.getByLabelText("Bet amount")).toHaveValue("160");
+
+    fireEvent.click(screen.getByRole("button", { name: "Set bet to ₦32M" }));
+    expect(screen.getByLabelText("Bet amount")).toHaveValue("32000000");
   });
 
   it("opens the exact How to Play flow from the drawer", () => {

@@ -4,13 +4,18 @@
 import confetti from "canvas-confetti";
 import Link from "next/link";
 import { useEffect, useRef, useState, type CSSProperties, type FormEvent } from "react";
+import { AppModalHost, useAppModals } from "@/components/layout/modals/app-modals";
+import { useMoney } from "@/components/ui/currency-select";
 import { SquareAvatar } from "@/components/ui/square-avatar";
 import { ArkjetCashier } from "@/features/casino/components/arkjet/arkjet-cashier";
+import { GameMoneyInput } from "@/features/casino/components/game-money-input";
 import { useSpinComments } from "@/features/casino/hooks/use-spin-comments";
 import { useSpinDaBottle } from "@/features/casino/hooks/use-spin-da-bottle";
 import type { SpinOutcome, SpinPick, SpinWager } from "@/features/casino/lib/api/spin";
 import { amountUnits, normalizeArkjetAmount } from "@/features/casino/lib/arkjet-funding";
 import { gameActionError } from "@/features/casino/lib/game-error";
+import { usePortfolio } from "@/hooks/use-portfolio";
+import { fromBaseUnits } from "@/lib/trade/math";
 import styles from "./spin-da-bottle.module.css";
 
 const ASSET = "/casino/spin-da-bottle";
@@ -36,20 +41,6 @@ function delay(milliseconds: number) {
   return new Promise<void>((resolve) => window.setTimeout(resolve, milliseconds));
 }
 
-function money(value: string | null | undefined, currency: string) {
-  const amount = Number(value ?? 0);
-  const formatted = Number.isFinite(amount)
-    ? amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 6 })
-    : value;
-  return `${currency} ${formatted}`;
-}
-
-function compactAmount(value: number) {
-  if (value >= 1_000_000) return `${Number((value / 1_000_000).toFixed(1))}M`;
-  if (value >= 1_000) return `${Number((value / 1_000).toFixed(1))}K`;
-  return value < 1 ? value.toFixed(1) : String(value);
-}
-
 function maskedChatName(name: string, own: boolean) {
   if (own) return "You";
   const compact = name.trim().replace(/\s+/gu, "");
@@ -72,6 +63,9 @@ function resultAsset(wager: SpinWager) {
 
 export function SpinDaBottleSection() {
   const game = useSpinDaBottle();
+  const portfolio = usePortfolio({ scope: "base" });
+  const modals = useAppModals();
+  const money = useMoney();
   const [chatOpen, setChatOpen] = useState(false);
   const chat = useSpinComments(chatOpen && game.authReady && game.authenticated);
   const [amount, setAmount] = useState("0.10");
@@ -83,6 +77,7 @@ export function SpinDaBottleSection() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const [cashierOpen, setCashierOpen] = useState(false);
+  const [cashierInitialAmount, setCashierInitialAmount] = useState<string | undefined>();
   const [chatText, setChatText] = useState("");
   const [chatNotice, setChatNotice] = useState<string | null>(null);
   const [scale, setScale] = useState(1);
@@ -92,6 +87,11 @@ export function SpinDaBottleSection() {
 
   const rules = game.rules;
   const currency = rules?.currency ?? game.balance?.currency ?? "USDC";
+  const displayCurrency = money.ready ? money.currency.code : "USD";
+  const formatGameMoney = (value: string | null | undefined) => {
+    const parsed = Number(value ?? 0);
+    return Number.isFinite(parsed) ? money.formatExact(parsed) : String(value ?? "");
+  };
   const decimals = rules?.currencyDecimalPlaces ?? 6;
   const minimum = rules?.minimumAmount ?? "0.1";
   const ruleMaximum = Number(rules?.maximumStake ?? MAXIMUM_STAKE);
@@ -104,6 +104,16 @@ export function SpinDaBottleSection() {
     Number(normalized) <= maximum;
   const hasSufficientBalance = game.balance === null || Number(normalized) <= available;
   const validAmount = amountInRange && hasSufficientBalance;
+  const requiredUnits = amountUnits(normalized, decimals);
+  const playableUnits = amountUnits(
+    normalizeArkjetAmount(game.balance?.available ?? "0", decimals),
+    decimals
+  );
+  const shortfallUnits = requiredUnits > playableUnits ? requiredUnits - playableUnits : 0n;
+  const walletToken = portfolio.tokens.find(
+    (token) => token.network === "base-mainnet" && token.symbol.toUpperCase() === "USDC"
+  );
+  const walletRaw = BigInt(walletToken?.rawBalance ?? "0");
   const sliderValue = Math.min(
     maximum,
     Math.max(Number(minimum), Number(amount) || Number(minimum))
@@ -167,6 +177,15 @@ export function SpinDaBottleSection() {
     setNotice(null);
   }
 
+  function openFunding() {
+    if (!portfolio.loading && walletRaw < shortfallUnits) {
+      modals.openFunds();
+      return;
+    }
+    setCashierInitialAmount(fromBaseUnits(shortfallUnits, decimals));
+    setCashierOpen(true);
+  }
+
   async function executeSpin(playerPick: SpinPick, rebet = false) {
     if (!normalized || !validAmount || busy) return;
     const currentSequence = ++sequence.current;
@@ -210,12 +229,12 @@ export function SpinDaBottleSection() {
     }
     if (!amountInRange) {
       setNotice(
-        `Choose an amount from ${money(minimum, currency)} to ${money(String(maximum), currency)}.`
+        `Choose an amount from ${formatGameMoney(minimum)} to ${formatGameMoney(String(maximum))}.`
       );
       return;
     }
     if (!hasSufficientBalance) {
-      setNotice("Bet amount exceeds wallet balance.");
+      openFunding();
       return;
     }
     setConfirmRequest({ pick: playerPick, rebet });
@@ -305,12 +324,15 @@ export function SpinDaBottleSection() {
                 </div>
                 <div className={styles.walletRow}>
                   <img src={`${ASSET}/wallet.svg`} alt="" />
-                  <strong>{money(game.balance?.available ?? "0", currency)}</strong>
+                  <strong>{formatGameMoney(game.balance?.available ?? "0")}</strong>
                 </div>
                 <button
                   type="button"
                   className={styles.addMoneyLink}
-                  onClick={() => setCashierOpen(true)}
+                  onClick={() => {
+                    setCashierInitialAmount(undefined);
+                    setCashierOpen(true);
+                  }}
                 >
                   + Add Money
                 </button>
@@ -332,16 +354,18 @@ export function SpinDaBottleSection() {
                   <label className={styles.betAmount}>
                     <span>Bet</span>
                     <img className={styles.betChip} src={`${ASSET}/chip-blue-small.svg`} alt="" />
-                    <input
+                    <GameMoneyInput
                       inputMode="decimal"
                       value={amount}
+                      currencyDecimals={decimals}
                       disabled={busy}
                       aria-label="Bet amount"
-                      onChange={(event) => setAmount(event.target.value)}
+                      onValueChange={setAmount}
                     />
+                    <small>{displayCurrency}</small>
                   </label>
                   <div className={styles.sliderRow}>
-                    <span>{compactAmount(Number(minimum))}</span>
+                    <span>{money.format(Number(minimum))}</span>
                     <input
                       className={styles.slider}
                       style={sliderStyle}
@@ -354,7 +378,7 @@ export function SpinDaBottleSection() {
                       aria-label="Bet amount slider"
                       onChange={(event) => changeAmount(Number(event.target.value))}
                     />
-                    <span>{compactAmount(maximum)}</span>
+                    <span>{money.format(maximum)}</span>
                   </div>
                   <div className={styles.chipCarousel}>
                     <span className={styles.chipArrow} aria-hidden>
@@ -368,11 +392,11 @@ export function SpinDaBottleSection() {
                             type="button"
                             key={chip.value}
                             disabled={disabled}
-                            aria-label={`Set bet to ${compactAmount(chip.value)}`}
+                            aria-label={`Set bet to ${money.format(chip.value)}`}
                             onClick={() => changeAmount(chip.value)}
                           >
                             <img src={`${ASSET}/${chip.asset}`} alt="" />
-                            <b>{compactAmount(chip.value)}</b>
+                            <b>{money.format(chip.value)}</b>
                           </button>
                         );
                       })}
@@ -382,8 +406,8 @@ export function SpinDaBottleSection() {
                     </span>
                   </div>
                   <div className={styles.minMax}>
-                    <span>Min : {compactAmount(Number(minimum))}</span>
-                    <span>Max : {compactAmount(maximum)}</span>
+                    <span>Min : {money.format(Number(minimum))}</span>
+                    <span>Max : {money.format(maximum)}</span>
                   </div>
                   {notice ? <p className={styles.notice}>{notice}</p> : null}
                   {game.error && !notice ? (
@@ -414,7 +438,7 @@ export function SpinDaBottleSection() {
                   ) : null}
                   {result.won ? (
                     <p>
-                      You Won <b>{money(result.payout, currency)}</b>
+                      You Won <b>{formatGameMoney(result.payout)}</b>
                     </p>
                   ) : result.effectiveOutcome === "MIDDLE" ? (
                     <p>The bottle stopped at MIDDLE. You lose this round.</p>
@@ -572,6 +596,7 @@ export function SpinDaBottleSection() {
                       className={styles.drawerAddMoney}
                       onClick={() => {
                         setMenuOpen(false);
+                        setCashierInitialAmount(undefined);
                         setCashierOpen(true);
                       }}
                     >
@@ -591,7 +616,7 @@ export function SpinDaBottleSection() {
                   >
                     <h2 id="spin-confirm-title">Confirm Bet</h2>
                     <p>
-                      Place bet of {money(normalized, currency)} for {confirmRequest.pick}?
+                      Place bet of {formatGameMoney(normalized)} for {confirmRequest.pick}?
                     </p>
                     <div>
                       <button type="button" onClick={() => setConfirmRequest(null)}>
@@ -660,11 +685,22 @@ export function SpinDaBottleSection() {
         <ArkjetCashier
           balance={game.balance}
           minimumAmount={minimum}
+          initialAmount={cashierInitialAmount}
           productName="Spin Da Bottle"
           tone="chicken"
           onClose={() => setCashierOpen(false)}
+          onOpenFunds={() => {
+            setCashierOpen(false);
+            modals.openFunds();
+          }}
         />
       ) : null}
+      <AppModalHost
+        active={modals.modal}
+        onClose={modals.close}
+        onConfirmed={modals.showDone}
+        onOpenFunds={modals.openFunds}
+      />
     </div>
   );
 }
