@@ -13,7 +13,6 @@ import { usePortfolio } from "@/hooks/use-portfolio";
 import { fromBaseUnits } from "@/lib/trade/math";
 import { amountUnits, normalizeArkjetAmount, stepArkjetAmount } from "../../lib/arkjet-funding";
 import { GameHowToPlay } from "../game-how-to-play";
-import { ArkadeCampaignBadge } from "../campaign/arkade-campaign-badge";
 import { GameMoneyInput } from "../game-money-input";
 import { ChickenCharacter, type ChickenAnimation } from "./chicken-character";
 import styles from "./chicken.module.css";
@@ -41,6 +40,11 @@ const WORLD_RESET_MS = 500;
 
 const ArkjetCashier = dynamic(
   () => import("../arkjet/arkjet-cashier").then((module) => module.ArkjetCashier),
+  { ssr: false }
+);
+
+const ArkadeCampaignBadge = dynamic(
+  () => import("../campaign/arkade-campaign-badge").then((module) => module.ArkadeCampaignBadge),
   { ssr: false }
 );
 

@@ -15,7 +15,6 @@ import { useArkjet } from "@/features/casino/hooks/use-arkjet";
 import { usePortfolio } from "@/hooks/use-portfolio";
 import { amountUnits, normalizeArkjetAmount } from "@/features/casino/lib/arkjet-funding";
 import { GameHowToPlay } from "../game-how-to-play";
-import { ArkadeCampaignBadge } from "../campaign/arkade-campaign-badge";
 import { ArkjetBetCard } from "./arkjet-bet-card";
 import { ArkjetChatRail } from "./arkjet-chat-rail";
 import { ArkjetMultiplierBar, ArkjetStage } from "./arkjet-stage";
@@ -25,6 +24,11 @@ type RailTab = "all" | "previous" | "top";
 
 const ArkjetCashier = dynamic(
   () => import("./arkjet-cashier").then((module) => module.ArkjetCashier),
+  { ssr: false }
+);
+
+const ArkadeCampaignBadge = dynamic(
+  () => import("../campaign/arkade-campaign-badge").then((module) => module.ArkadeCampaignBadge),
   { ssr: false }
 );
 

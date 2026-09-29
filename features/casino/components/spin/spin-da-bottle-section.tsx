@@ -9,7 +9,6 @@ import { AppModalHost, useAppModals } from "@/components/layout/modals/app-modal
 import { useMoney } from "@/components/ui/currency-select";
 import { SquareAvatar } from "@/components/ui/square-avatar";
 import { GameMoneyInput } from "@/features/casino/components/game-money-input";
-import { ArkadeCampaignBadge } from "@/features/casino/components/campaign/arkade-campaign-badge";
 import { useSpinComments } from "@/features/casino/hooks/use-spin-comments";
 import { useSpinDaBottle } from "@/features/casino/hooks/use-spin-da-bottle";
 import type { SpinOutcome, SpinPick, SpinWager } from "@/features/casino/lib/api/spin";
@@ -39,6 +38,14 @@ const ArkjetCashier = dynamic(
   () =>
     import("@/features/casino/components/arkjet/arkjet-cashier").then(
       (module) => module.ArkjetCashier
+    ),
+  { ssr: false }
+);
+
+const ArkadeCampaignBadge = dynamic(
+  () =>
+    import("@/features/casino/components/campaign/arkade-campaign-badge").then(
+      (module) => module.ArkadeCampaignBadge
     ),
   { ssr: false }
 );
