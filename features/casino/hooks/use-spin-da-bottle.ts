@@ -3,7 +3,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
 import { ARKJET_KEYS } from "@/features/casino/hooks/use-arkjet";
-import { fetchArkjetBalance } from "@/features/casino/lib/api/arkjet";
+import { ARKADE_CAMPAIGN_QUERY_KEY, fetchArkjetBalance } from "@/features/casino/lib/api/arkjet";
 import {
   fetchSpinRules,
   playSpin,
@@ -48,6 +48,9 @@ export function useSpinDaBottle() {
     },
     onSettled: () => {
       void Promise.all([queryClient.invalidateQueries({ queryKey: KEYS.balance })]);
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ARKADE_CAMPAIGN_QUERY_KEY });
     },
   });
 

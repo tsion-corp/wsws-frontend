@@ -15,6 +15,7 @@ import { useArkjet } from "@/features/casino/hooks/use-arkjet";
 import { usePortfolio } from "@/hooks/use-portfolio";
 import { amountUnits, normalizeArkjetAmount } from "@/features/casino/lib/arkjet-funding";
 import { GameHowToPlay } from "../game-how-to-play";
+import { ArkadeCampaignBadge } from "../campaign/arkade-campaign-badge";
 import { ArkjetBetCard } from "./arkjet-bet-card";
 import { ArkjetChatRail } from "./arkjet-chat-rail";
 import { ArkjetMultiplierBar, ArkjetStage } from "./arkjet-stage";
@@ -445,6 +446,11 @@ export function ArkjetSection() {
           </button>
         </div>
         <div className={styles.topActions}>
+          <ArkadeCampaignBadge
+            className={styles.campaignSlot}
+            enabled={arkjet.authReady && arkjet.authenticated}
+            playerId={arkjet.balance?.playerId}
+          />
           <button
             type="button"
             className={styles.balanceButton}

@@ -45,6 +45,8 @@ const SPIN_PUBLIC_READ = /^(?:spin\/rules|spin\/proofs\/[0-9a-f-]{36})$/iu;
 const SPIN_READ = /^spin\/wagers\/history$/u;
 const SPIN_PREPARE = /^spin\/wagers\/prepare$/u;
 const SPIN_PLAY = /^spin\/wagers\/[0-9a-f-]{36}\/play$/iu;
+const CAMPAIGN_CURRENT = "campaigns/current";
+const CAMPAIGN_DRAW_PROOF = /^campaigns\/[0-9a-f-]{36}\/draw-proof$/iu;
 
 function invalidPath() {
   return NextResponse.json(
@@ -83,7 +85,13 @@ async function forward(
     CHICKEN_READ.test(joined) || CHICKEN_START.test(joined) || CHICKEN_ACTION.test(joined);
   const isSpin = SPIN_READ.test(joined) || SPIN_PREPARE.test(joined) || SPIN_PLAY.test(joined);
   const requiresAuth =
-    isChat || GAME_COMMENTS.test(joined) || isBet || isFundingWrite || isChicken || isSpin;
+    isChat ||
+    GAME_COMMENTS.test(joined) ||
+    isBet ||
+    isFundingWrite ||
+    isChicken ||
+    isSpin ||
+    joined === CAMPAIGN_CURRENT;
   const allowed =
     (method === "GET" &&
       (PUBLIC_READ.test(joined) ||
@@ -92,6 +100,8 @@ async function forward(
         CHICKEN_READ.test(joined) ||
         SPIN_PUBLIC_READ.test(joined) ||
         SPIN_READ.test(joined) ||
+        joined === CAMPAIGN_CURRENT ||
+        CAMPAIGN_DRAW_PROOF.test(joined) ||
         joined === "comments/spin-da-bottle" ||
         joined === "chat" ||
         BET_READ.test(joined))) ||

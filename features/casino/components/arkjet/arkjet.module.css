@@ -130,6 +130,10 @@
   outline-offset: 2px;
 }
 
+.campaignSlot {
+  margin-right: 2px;
+}
+
 .balance {
   color: #d5d5d8;
   font-size: 12px;
@@ -2039,6 +2043,10 @@
     gap: 6px;
     padding: 0 7px;
     padding-top: env(safe-area-inset-top);
+  }
+
+  .campaignSlot {
+    margin-right: 0;
   }
 
   .brandName {

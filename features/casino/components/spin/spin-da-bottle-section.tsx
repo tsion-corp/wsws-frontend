@@ -9,6 +9,7 @@ import { AppModalHost, useAppModals } from "@/components/layout/modals/app-modal
 import { useMoney } from "@/components/ui/currency-select";
 import { SquareAvatar } from "@/components/ui/square-avatar";
 import { GameMoneyInput } from "@/features/casino/components/game-money-input";
+import { ArkadeCampaignBadge } from "@/features/casino/components/campaign/arkade-campaign-badge";
 import { useSpinComments } from "@/features/casino/hooks/use-spin-comments";
 import { useSpinDaBottle } from "@/features/casino/hooks/use-spin-da-bottle";
 import type { SpinOutcome, SpinPick, SpinWager } from "@/features/casino/lib/api/spin";
@@ -344,6 +345,11 @@ export function SpinDaBottleSection() {
                 >
                   + Add Money
                 </button>
+                <ArkadeCampaignBadge
+                  className={styles.campaignSlot}
+                  enabled={game.authReady && game.authenticated}
+                  playerId={game.balance?.playerId}
+                />
               </header>
 
               <div className={styles.boardRow}>

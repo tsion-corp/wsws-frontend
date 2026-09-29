@@ -243,6 +243,12 @@
   cursor: pointer;
 }
 
+.campaignSlot {
+  position: absolute;
+  top: 50px;
+  right: 16px;
+}
+
 .boardRow {
   position: absolute;
   top: 140px;

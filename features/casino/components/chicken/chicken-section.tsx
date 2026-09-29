@@ -12,6 +12,7 @@ import { usePortfolio } from "@/hooks/use-portfolio";
 import { fromBaseUnits } from "@/lib/trade/math";
 import { amountUnits, normalizeArkjetAmount, stepArkjetAmount } from "../../lib/arkjet-funding";
 import { GameHowToPlay } from "../game-how-to-play";
+import { ArkadeCampaignBadge } from "../campaign/arkade-campaign-badge";
 import { GameMoneyInput } from "../game-money-input";
 import { ChickenCharacter, type ChickenAnimation } from "./chicken-character";
 import styles from "./chicken.module.css";
@@ -407,6 +408,11 @@ export function ChickenSection() {
         >
           ? How to play
         </button>
+        <ArkadeCampaignBadge
+          className={styles.campaignSlot}
+          enabled={game.authReady && game.authenticated}
+          playerId={game.balance?.playerId}
+        />
         <div className={styles.headerRight}>
           <button
             type="button"
