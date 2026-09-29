@@ -3,11 +3,11 @@
 
 import confetti from "canvas-confetti";
 import Link from "next/link";
+import dynamic from "next/dynamic";
 import { useEffect, useRef, useState, type CSSProperties, type FormEvent } from "react";
 import { AppModalHost, useAppModals } from "@/components/layout/modals/app-modals";
 import { useMoney } from "@/components/ui/currency-select";
 import { SquareAvatar } from "@/components/ui/square-avatar";
-import { ArkjetCashier } from "@/features/casino/components/arkjet/arkjet-cashier";
 import { GameMoneyInput } from "@/features/casino/components/game-money-input";
 import { useSpinComments } from "@/features/casino/hooks/use-spin-comments";
 import { useSpinDaBottle } from "@/features/casino/hooks/use-spin-da-bottle";
@@ -33,6 +33,14 @@ const CHIPS = [
   { value: 10, asset: "chip-grey.svg" },
   { value: 20_000, asset: "chip-bright-pink.svg" },
 ] as const;
+
+const ArkjetCashier = dynamic(
+  () =>
+    import("@/features/casino/components/arkjet/arkjet-cashier").then(
+      (module) => module.ArkjetCashier
+    ),
+  { ssr: false }
+);
 
 type Phase = "betting" | "requesting" | "spinning" | "result";
 type ConfirmRequest = { pick: SpinPick; rebet: boolean };

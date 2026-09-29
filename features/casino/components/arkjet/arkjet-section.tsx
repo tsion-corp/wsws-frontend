@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import dynamic from "next/dynamic";
 import { useState } from "react";
 import { AppModalHost, useAppModals } from "@/components/layout/modals/app-modals";
 import { useMoney } from "@/components/ui/currency-select";
@@ -15,12 +16,16 @@ import { usePortfolio } from "@/hooks/use-portfolio";
 import { amountUnits, normalizeArkjetAmount } from "@/features/casino/lib/arkjet-funding";
 import { GameHowToPlay } from "../game-how-to-play";
 import { ArkjetBetCard } from "./arkjet-bet-card";
-import { ArkjetCashier } from "./arkjet-cashier";
 import { ArkjetChatRail } from "./arkjet-chat-rail";
 import { ArkjetMultiplierBar, ArkjetStage } from "./arkjet-stage";
 import styles from "./arkjet.module.css";
 
 type RailTab = "all" | "previous" | "top";
+
+const ArkjetCashier = dynamic(
+  () => import("./arkjet-cashier").then((module) => module.ArkjetCashier),
+  { ssr: false }
+);
 
 function ArkjetLogo() {
   return (

@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import dynamic from "next/dynamic";
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { AppModalHost, useAppModals } from "@/components/layout/modals/app-modals";
 import { useMoney } from "@/components/ui/currency-select";
@@ -10,7 +11,6 @@ import { gameActionError } from "@/features/casino/lib/game-error";
 import { usePortfolio } from "@/hooks/use-portfolio";
 import { fromBaseUnits } from "@/lib/trade/math";
 import { amountUnits, normalizeArkjetAmount, stepArkjetAmount } from "../../lib/arkjet-funding";
-import { ArkjetCashier } from "../arkjet/arkjet-cashier";
 import { GameHowToPlay } from "../game-how-to-play";
 import { GameMoneyInput } from "../game-money-input";
 import { ChickenCharacter, type ChickenAnimation } from "./chicken-character";
@@ -36,6 +36,11 @@ const CROSSING_MS = 250;
 const CHECKPOINT_REVEAL_MS = 150;
 const RESULT_HOLD_MS = 1_000;
 const WORLD_RESET_MS = 500;
+
+const ArkjetCashier = dynamic(
+  () => import("../arkjet/arkjet-cashier").then((module) => module.ArkjetCashier),
+  { ssr: false }
+);
 
 type VisualPhase =
   "setup" | "ready" | "walking" | "waiting" | "lost" | "lost-reset" | "won" | "won-reset";
