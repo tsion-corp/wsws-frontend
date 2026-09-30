@@ -8,6 +8,7 @@ allowBuilds:
 
 patchedDependencies:
   "@toast-ui/editor@3.2.2": features/casino/components/chess/bits/patches/@toast-ui__editor.patch
+  "decane-connect-kit@2.29.2": patches/decane-connect-kit@2.29.2.patch
 
 ignoredBuiltDependencies:
   - sharp
