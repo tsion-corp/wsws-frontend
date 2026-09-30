@@ -21,6 +21,7 @@ import { KashCard } from "@/features/portfolio/components/kash-card";
 // then a promo strip. Desktop keeps the side-by-side grid below.
 import { KashCardMobile } from "@/features/portfolio/components/kash-card-mobile";
 import { BalanceCarousel } from "@/features/portfolio/components/balance-carousel";
+import { BalanceReveal } from "@/features/portfolio/components/balance-reveal";
 import Link from "next/link";
 import { PromoCarousel } from "@/components/ui/promo-deck";
 import { PromoBanner, PromoRail } from "@/components/ui/promo-rail";
@@ -349,24 +350,36 @@ export function PortfolioView({
       <KashUpgradeModal open={kashModal === "upgrade"} onClose={() => setKashModal(null)} />
       <KashSendModal open={kashModal === "send"} onClose={() => setKashModal(null)} />
 
-      {/* Phone head: swipe carousel of the two starfield cards, then the promo
-          strip. The carousel gives the h-full cards their height. */}
+      {/* Phone head: the two starfield cards, then the promo strip. The
+          carousel gives the h-full cards their height.
+          
+          BalanceReveal turns the card over as the page scrolls — Kash on the
+          way down, the balance again on the way back up — so nobody has to
+          discover the sideways swipe. It adds no height and moves nothing: the
+          promo strip below sits exactly where it always did. The swipe still
+          works, because the reveal asks for a card rather than owning one.
+          Desktop never sees any of this; it is inside md:hidden and shows both
+          cards side by side below. */}
       <div className="md:hidden">
-        <BalanceCarousel>
-          <BalanceCard
-            onOpenFunds={onOpenFunds}
-            onOpenWithdraw={onOpenWithdraw}
-            onTakeTour={onTakeTour}
-            updateBalanceSlot={updateBalanceSlot}
-            maskForMigration={maskForMigration}
-          />
-          <KashCardMobile
-            onBuy={() => setKashModal("buy")}
-            onSend={() => setKashModal("send")}
-            onConvert={() => setKashModal("convert")}
-            onHistory={() => setKashModal("history")}
-          />
-        </BalanceCarousel>
+        <BalanceReveal>
+          {(card) => (
+            <BalanceCarousel card={card}>
+              <BalanceCard
+                onOpenFunds={onOpenFunds}
+                onOpenWithdraw={onOpenWithdraw}
+                onTakeTour={onTakeTour}
+                updateBalanceSlot={updateBalanceSlot}
+                maskForMigration={maskForMigration}
+              />
+              <KashCardMobile
+                onBuy={() => setKashModal("buy")}
+                onSend={() => setKashModal("send")}
+                onConvert={() => setKashModal("convert")}
+                onHistory={() => setKashModal("history")}
+              />
+            </BalanceCarousel>
+          )}
+        </BalanceReveal>
         {/* The phone's own promo strip, one ticket at a time. The desk has its
             own rail under the balance cards below. */}
         <div className="mt-3">
