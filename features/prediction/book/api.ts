@@ -80,6 +80,7 @@ export interface BookBoardMarket {
   id: string;
   eventId: string | null;
   title: string;
+  imageUrl: string | null;
   currency: string;
   minStakeE6: string;
   maxStakeE6: string;
@@ -102,6 +103,8 @@ export interface BookBoardEvent {
   sport: BookSport;
   country: BookEntity;
   league: BookEntity;
+  trendingRank: number | null;
+  primaryMarketId: string | null;
   participants: Array<{ name: string; imageUrl: string | null }>;
   imageUrl: string | null;
   markets: BookBoardMarket[];
