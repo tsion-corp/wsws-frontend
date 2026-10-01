@@ -199,6 +199,7 @@ describe("PredictionView", () => {
       "Trending",
       "Breaking",
       "New",
+      "ARK Markets",
       ...PREDICTION_CATEGORIES.filter(({ key }) => key !== "trending").map(({ label }) => label),
     ]);
     expect(screen.getByRole("link", { name: "Trending" })).toHaveAttribute("href", "/prediction");
@@ -209,6 +210,10 @@ describe("PredictionView", () => {
     expect(screen.getByRole("link", { name: "New" })).toHaveAttribute(
       "href",
       "/prediction/markets?category=trending&sort=newest"
+    );
+    expect(screen.getByRole("link", { name: "ARK Markets" })).toHaveAttribute(
+      "href",
+      "/prediction/local"
     );
     for (const category of PREDICTION_CATEGORIES.filter(({ key }) => key !== "trending")) {
       expect(screen.getByRole("link", { name: category.label })).toHaveAttribute(
