@@ -80,6 +80,7 @@ export interface BookBoardMarket {
   id: string;
   eventId: string | null;
   title: string;
+  imageUrl: string | null;
   currency: string;
   minStakeE6: string;
   maxStakeE6: string;
