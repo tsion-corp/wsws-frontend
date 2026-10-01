@@ -617,13 +617,13 @@ export function BookSportsbookView() {
         aria-label="Ark Matchday"
         className="mx-auto w-full max-w-[1440px] border-x border-b border-white/[0.07] bg-[#080808] p-3 sm:p-4 lg:px-6"
       >
-        <div className="relative h-36 overflow-hidden rounded-xl border border-white/10 bg-[#07100d] shadow-[0_18px_50px_rgba(0,0,0,.35)] sm:h-52 lg:h-64 xl:h-72">
+        <div className="relative overflow-hidden rounded-xl border border-white/10 bg-black shadow-[0_18px_50px_rgba(0,0,0,.35)]">
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
             src="/assets/images/matchday.png"
             alt="Ark Matchday: Carter Efe versus Speed Darlington and Phyna versus Nkechi Blessing"
             fetchPriority="high"
-            className="h-full w-full object-cover object-center"
+            className="block h-auto w-full object-contain"
           />
           <div className="pointer-events-none absolute inset-0 ring-1 ring-white/[0.06] ring-inset" />
         </div>

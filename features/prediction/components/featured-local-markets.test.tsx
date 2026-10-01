@@ -113,6 +113,8 @@ describe("FeaturedLocalMarkets", () => {
     expect(within(cards[1]).getByText("Phyna vs Nkechi Blessing")).toBeInTheDocument();
     expect(screen.queryByText("Fight Goes the Distance")).not.toBeInTheDocument();
     expect(within(cards[0]).getByText("View all 2")).toBeInTheDocument();
+    expect(cards[0].querySelector("img")).toHaveClass("left-0");
+    expect(cards[1].querySelector("img")).toHaveClass("right-0");
   });
 
   it("opens a local ticket for the selected primary outcome", async () => {

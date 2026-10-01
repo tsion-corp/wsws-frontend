@@ -69,6 +69,7 @@ export function FeaturedLocalMarkets({
         {events.map((event) => {
           const market = primaryMarket(event);
           if (!market) return null;
+          const imageSide = event.trendingRank === 2 ? "right-0" : "left-0";
           const outcomes = market.outcomes.filter((outcome) => !outcome.hidden).slice(0, 2);
           const openMarketCount = event.markets.filter(
             (item) => !item.hidden && item.state === "active"
@@ -84,7 +85,7 @@ export function FeaturedLocalMarkets({
                 <img
                   src={event.imageUrl}
                   alt=""
-                  className="absolute inset-0 -z-20 h-full w-full object-cover opacity-25"
+                  className={`absolute top-0 -z-20 h-full w-[200%] max-w-none object-cover opacity-30 ${imageSide}`}
                 />
               ) : null}
               <div className="absolute inset-0 -z-10 bg-[linear-gradient(100deg,rgba(5,8,6,.98)_15%,rgba(5,8,6,.84)_58%,rgba(5,8,6,.68))]" />
