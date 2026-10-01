@@ -23,3 +23,7 @@ screen. When the prediction ledger is short, the ticket transfers only the
 missing amount to Prediction custody, confirms the deposit idempotently, then
 refreshes the pool quote before placing the bet. Ticket history and six-character
 booking codes are available from the same sidebar.
+
+The frontend proxy routes `/book/*` requests to the Rust `prediction` service
+on the configured WSAPI gateway. Existing market, group and comment requests
+continue to use the separately configured `prediction-market` service.
