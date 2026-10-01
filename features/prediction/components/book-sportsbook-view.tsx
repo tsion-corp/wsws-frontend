@@ -28,13 +28,9 @@ import {
   PredictionBetPanel,
   PredictionBetSidebarFrame,
 } from "@/features/prediction/components/prediction-bet-sidebar";
-import {
-  MarketSelector,
-  type MarketOption,
-} from "@/features/prediction/sportsbook/components/market-toolbar";
 import { SportIcon } from "@/features/prediction/sportsbook/components/sport-icon";
 
-interface Pick {
+export interface BookPick {
   event: BookBoardEvent;
   market: BookBoardMarket;
   outcome: BookOutcome;
@@ -63,47 +59,38 @@ function eventTime(startsAt: number): { day: string; time: string } {
   };
 }
 
-function marketKey(market: BookBoardMarket): string {
-  return `title:${market.title.trim().toLowerCase().replaceAll(/\s+/gu, " ")}`;
-}
-
-function collectMarketOptions(events: BookBoardEvent[]): MarketOption[] {
-  const options = new Map<string, MarketOption>();
-  for (const event of events) {
-    for (const market of event.markets) {
-      if (!market.hidden && market.state === "active") {
-        const key = marketKey(market);
-        options.set(key, { key, label: market.title });
-      }
-    }
-  }
-  return [...options.values()];
-}
-
 function OutcomeButton({
   event,
   market,
   outcome,
+  tone,
   selected,
   onPick,
 }: {
   event: BookBoardEvent;
   market: BookBoardMarket;
   outcome: BookOutcome;
+  tone: "green" | "red";
   selected: boolean;
-  onPick: (pick: Pick) => void;
+  onPick: (pick: BookPick) => void;
 }) {
+  const toneClass =
+    tone === "green"
+      ? selected
+        ? "border-[#14be47] bg-[#123b20] text-[#65e58b] shadow-[inset_0_0_0_1px_rgba(20,190,71,.25)]"
+        : "border-[#17652f] bg-[#0c2514] text-[#47d674] hover:border-[#14be47] hover:bg-[#123b20]"
+      : selected
+        ? "border-[#ef4055] bg-[#42151b] text-[#ff8291] shadow-[inset_0_0_0_1px_rgba(239,64,85,.25)]"
+        : "border-[#7a2933] bg-[#2a1014] text-[#ff687a] hover:border-[#ef4055] hover:bg-[#42151b]";
+
   return (
     <button
       type="button"
       disabled={outcome.state !== "active" || market.state !== "active"}
       aria-pressed={selected}
+      aria-label={`${market.title}: ${outcome.title} at ${outcome.odds}`}
       onClick={() => onPick({ event, market, outcome })}
-      className={`flex h-12 w-full min-w-0 cursor-pointer items-center justify-center rounded-lg border px-3 text-center text-base font-bold tabular-nums transition-colors disabled:cursor-not-allowed disabled:opacity-35 ${
-        selected
-          ? "border-[#5ba8ff] bg-[#172235] text-[#8dc3ff]"
-          : "border-white/10 bg-white/[0.035] text-white hover:border-white/20 hover:bg-white/[0.07]"
-      }`}
+      className={`flex h-12 w-full min-w-0 cursor-pointer items-center justify-center rounded-lg border px-3 text-center text-base font-bold tabular-nums transition-colors disabled:cursor-not-allowed disabled:opacity-35 ${toneClass}`}
     >
       {outcome.odds}
     </button>
@@ -123,6 +110,32 @@ function ParticipantPortrait({ name, imageUrl }: { name: string; imageUrl: strin
   );
 }
 
+function MarketArtwork({
+  title,
+  imageUrl,
+  fallbackUrl,
+  className,
+}: {
+  title: string;
+  imageUrl: string | null;
+  fallbackUrl: string | null;
+  className: string;
+}) {
+  const source = imageUrl ?? fallbackUrl;
+  return (
+    <span
+      className={`grid shrink-0 place-items-center overflow-hidden rounded-md border border-white/10 bg-[#242424] ${className}`}
+    >
+      {source ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img src={source} alt="" className="size-full object-cover" />
+      ) : (
+        <span className="text-[10px] font-bold text-[#999]">{title.slice(0, 1).toUpperCase()}</span>
+      )}
+    </span>
+  );
+}
+
 function EventRow({
   event,
   market,
@@ -131,8 +144,8 @@ function EventRow({
 }: {
   event: BookBoardEvent;
   market: BookBoardMarket;
-  pick: Pick | null;
-  onPick: (pick: Pick) => void;
+  pick: BookPick | null;
+  onPick: (pick: BookPick) => void;
 }) {
   const time = eventTime(event.startsAt);
   const outcomes = market.outcomes.filter((outcome) => !outcome.hidden).slice(0, 4);
@@ -146,7 +159,20 @@ function EventRow({
             <span className="mr-1 font-semibold text-[#adadad]">{time.time}</span>
             <span className="mr-2">{time.day}</span>
             <SportIcon sport={event.sport.slug} name={event.sport.name} className="size-4" />
-            <span className="ml-1 truncate font-semibold text-[#adadad]">{event.league.name}</span>
+            <span className="ml-1 truncate rounded bg-white/[0.06] px-1.5 py-0.5 font-semibold text-[#d7d9de]">
+              {market.title}
+            </span>
+          </div>
+          <div className="mb-2 flex min-w-0 items-center gap-2">
+            <MarketArtwork
+              title={event.title}
+              imageUrl={market.imageUrl}
+              fallbackUrl={event.imageUrl}
+              className="size-6"
+            />
+            <span className="truncate text-[11px] font-bold tracking-[0.01em] text-[#d7d9de]">
+              {event.title}
+            </span>
           </div>
           <div className="flex min-w-0 flex-col gap-1.5">
             {event.participants.slice(0, 2).map((participant, index) => (
@@ -161,7 +187,7 @@ function EventRow({
         </div>
 
         <div className={`grid min-w-0 gap-2 ${columns}`}>
-          {outcomes.map((outcome) => (
+          {outcomes.map((outcome, index) => (
             <div key={outcome.id} className="min-w-0">
               <p className="mb-1 h-4 truncate text-center text-xs font-semibold text-[#999]">
                 {outcome.title}
@@ -170,6 +196,7 @@ function EventRow({
                 event={event}
                 market={market}
                 outcome={outcome}
+                tone={index === 0 ? "green" : "red"}
                 selected={pick?.outcome.id === outcome.id}
                 onPick={onPick}
               />
@@ -187,7 +214,7 @@ function BetSlip({
   onAccepted,
   onBusyChange,
 }: {
-  pick: Pick;
+  pick: BookPick;
   onClear: () => void;
   onAccepted: () => void;
   onBusyChange: (busy: boolean) => void;
@@ -196,19 +223,15 @@ function BetSlip({
   const queryClient = useQueryClient();
   const { ready, authenticated } = useAuthSession();
   const funding = useBookFunding();
-  const [stake, setStake] = useState("0.10");
+  const [stake, setStake] = useState("10");
   const [phase, setPhase] = useState<BetPhase>("idle");
   const deferredStake = useDeferredValue(stake);
   const stakeE6 = stakeToE6(deferredStake);
-  const withinLimits = Boolean(
-    stakeE6 &&
-    BigInt(stakeE6) >= BigInt(pick.market.minStakeE6) &&
-    BigInt(stakeE6) <= BigInt(pick.market.maxStakeE6)
-  );
+  const meetsMinimum = Boolean(stakeE6 && BigInt(stakeE6) >= BigInt(pick.market.minStakeE6));
   const quote = useQuery({
     queryKey: ["prediction", "book", "quote", pick.outcome.id, stakeE6],
     queryFn: () => quoteBookBet(pick.market.id, pick.outcome.id, stakeE6!),
-    enabled: Boolean(stakeE6 && withinLimits),
+    enabled: Boolean(stakeE6 && meetsMinimum),
     retry: false,
     staleTime: 0,
   });
@@ -246,7 +269,6 @@ function BetSlip({
   });
 
   const minimum = formatUsdcE6(pick.market.minStakeE6);
-  const maximum = formatUsdcE6(pick.market.maxStakeE6);
   const quotedOdds = quote.data ? formatDecimalOddsE6(quote.data.decimalOddsE6) : pick.outcome.odds;
   const potentialReturn = quote.data ? formatUsdcE6(quote.data.potentialPayoutE6) : "0.00";
   const busy = bet.isPending || phase !== "idle";
@@ -286,16 +308,24 @@ function BetSlip({
       <div className="p-3">
         <article className="rounded-lg border border-[#303030] bg-[#191919] p-3">
           <div className="flex items-start justify-between gap-3">
-            <div className="min-w-0">
-              <p className="text-[9px] font-semibold text-[#777]">
-                {pick.event.league.name} · {pick.market.title}
-              </p>
-              <p className="mt-1 line-clamp-2 text-[11px] leading-4 text-[#ddd]">
-                {pick.event.title}
-              </p>
-              <p className="mt-1 text-[10px] font-semibold text-white">
-                {pick.outcome.title} <span className="text-[#80dbae]">{quotedOdds}</span>
-              </p>
+            <div className="flex min-w-0 gap-2.5">
+              <MarketArtwork
+                title={pick.market.title}
+                imageUrl={pick.market.imageUrl}
+                fallbackUrl={pick.event.imageUrl}
+                className="size-10"
+              />
+              <div className="min-w-0">
+                <p className="text-[9px] font-semibold text-[#777]">
+                  {pick.event.league.name} · {pick.market.title}
+                </p>
+                <p className="mt-1 line-clamp-2 text-[11px] leading-4 text-[#ddd]">
+                  {pick.event.title}
+                </p>
+                <p className="mt-1 text-[10px] font-semibold text-white">
+                  {pick.outcome.title} <span className="text-[#80dbae]">{quotedOdds}</span>
+                </p>
+              </div>
             </div>
             <button
               type="button"
@@ -342,9 +372,9 @@ function BetSlip({
             Pool forming. Your stake is refunded if no opposing stake arrives before close.
           </p>
         ) : null}
-        {!withinLimits ? (
+        {!meetsMinimum ? (
           <p className="mt-3 text-[10px] text-[#ef9ca5]">
-            Enter a stake between {minimum} and {maximum} USDC.
+            Enter a stake of at least {minimum} USDC.
           </p>
         ) : quote.error ? (
           <p className="mt-3 text-[10px] text-[#ef9ca5]">{quote.error.message}</p>
@@ -359,7 +389,7 @@ function BetSlip({
           type="button"
           disabled={
             !ready ||
-            !withinLimits ||
+            !meetsMinimum ||
             quote.isFetching ||
             !quote.data ||
             busy ||
@@ -475,12 +505,12 @@ function MyBookBets({ enabled }: { enabled: boolean }) {
   );
 }
 
-function BookBetPanel({
+export function BookBetPanel({
   pick,
   onClear,
   onClose,
 }: {
-  pick: Pick | null;
+  pick: BookPick | null;
   onClear: () => void;
   onClose?: () => void;
 }) {
@@ -523,8 +553,7 @@ export function BookSportsbookView() {
   const [country, setCountry] = useState("");
   const [league, setLeague] = useState("");
   const [offset, setOffset] = useState(0);
-  const [selectedMarket, setSelectedMarket] = useState("");
-  const [pick, setPick] = useState<Pick | null>(null);
+  const [pick, setPick] = useState<BookPick | null>(null);
   const [desktopSlipOpen, setDesktopSlipOpen] = useState(false);
   const [mobileSlipOpen, setMobileSlipOpen] = useState(false);
   const capabilities = useQuery({
@@ -551,31 +580,26 @@ export function BookSportsbookView() {
     staleTime: 10_000,
     refetchInterval: 30_000,
   });
-  const marketOptions = collectMarketOptions(board.data?.events ?? []);
-  const selectedMarketKey = marketOptions.some(({ key }) => key === selectedMarket)
-    ? selectedMarket
-    : (marketOptions[0]?.key ?? "");
-  const events = (board.data?.events ?? []).flatMap((event) => {
-    const market = event.markets.find((item) => marketKey(item) === selectedMarketKey);
-    return market ? [{ event, market }] : [];
-  });
+  const markets = (board.data?.events ?? []).flatMap((event) =>
+    event.markets
+      .filter((market) => !market.hidden && market.state === "active")
+      .map((market) => ({ event, market }))
+  );
 
   function selectSport(nextSport: string) {
     setSport(nextSport);
     setCountry("");
     setLeague("");
     setOffset(0);
-    setSelectedMarket("");
   }
 
   function selectLeague(nextCountry: string, nextLeague: string) {
     setCountry(nextCountry);
     setLeague(nextLeague);
     setOffset(0);
-    setSelectedMarket("");
   }
 
-  function selectPick(nextPick: Pick) {
+  function selectPick(nextPick: BookPick) {
     setPick(nextPick);
     if (window.matchMedia("(min-width: 1280px)").matches) setDesktopSlipOpen(true);
     else setMobileSlipOpen(true);
@@ -589,6 +613,21 @@ export function BookSportsbookView() {
     <main
       className={`relative min-h-screen bg-black text-white transition-[padding] duration-300 ease-in-out ${desktopSlipOpen ? "xl:pr-[326px]" : ""}`}
     >
+      <section
+        aria-label="Ark Matchday"
+        className="mx-auto w-full max-w-[1440px] border-x border-b border-white/[0.07] bg-[#080808] p-3 sm:p-4 lg:px-6"
+      >
+        <div className="relative overflow-hidden rounded-xl border border-white/10 bg-black shadow-[0_18px_50px_rgba(0,0,0,.35)]">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src="/assets/images/matchday.png"
+            alt="Ark Matchday: Carter Efe versus Speed Darlington and Phyna versus Nkechi Blessing"
+            fetchPriority="high"
+            className="block h-auto w-full object-contain"
+          />
+          <div className="pointer-events-none absolute inset-0 ring-1 ring-white/[0.06] ring-inset" />
+        </div>
+      </section>
       <nav
         aria-label="Local sports"
         className="flex h-12 [scrollbar-width:none] items-center gap-1 overflow-x-auto border-y border-white/[0.07] px-4 lg:px-6 [&::-webkit-scrollbar]:hidden"
@@ -672,15 +711,13 @@ export function BookSportsbookView() {
             </div>
           </div>
 
-          <div className="grid grid-cols-[minmax(0,1fr)_54%] items-center border-b border-white/[0.06] px-3 py-2 min-[1280px]:grid-cols-[minmax(0,1fr)_28rem] min-[1280px]:px-5">
+          <div className="flex items-center justify-between border-b border-white/[0.06] px-3 py-3 min-[1280px]:px-5">
             <span className="text-[11px] font-semibold tracking-wide text-[#646a75] uppercase">
-              Events
+              Open markets
             </span>
-            <MarketSelector
-              options={marketOptions}
-              selectedKey={selectedMarketKey}
-              onChange={setSelectedMarket}
-            />
+            <span className="text-[11px] font-semibold text-[#858b96] tabular-nums">
+              {markets.length} {markets.length === 1 ? "market" : "markets"}
+            </span>
           </div>
 
           {navigation.isLoading || board.isLoading ? (
@@ -700,10 +737,10 @@ export function BookSportsbookView() {
                 Try again
               </button>
             </div>
-          ) : events.length ? (
-            events.map(({ event, market }) => (
+          ) : markets.length ? (
+            markets.map(({ event, market }) => (
               <EventRow
-                key={event.id}
+                key={`${event.id}:${market.id}`}
                 event={event}
                 market={market}
                 pick={pick}
@@ -716,10 +753,10 @@ export function BookSportsbookView() {
             </div>
           )}
 
-          {events.length ? (
+          {markets.length ? (
             <footer className="flex items-center justify-between border-t border-white/[0.06] px-4 py-3">
               <span className="text-[10px] text-[#7e7e7e]">
-                {board.data?.total ?? events.length} events
+                {markets.length} open {markets.length === 1 ? "market" : "markets"}
               </span>
               <div className="flex gap-2">
                 <button
