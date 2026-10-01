@@ -355,7 +355,6 @@ export function SpinDaBottleSection() {
                 <ArkadeCampaignBadge
                   className={styles.campaignSlot}
                   enabled={game.authReady && game.authenticated}
-                  playerId={game.balance?.playerId}
                 />
               </header>
 
@@ -709,6 +708,7 @@ export function SpinDaBottleSection() {
           initialAmount={cashierInitialAmount}
           productName="Spin Da Bottle"
           tone="chicken"
+          fundingScope="spin"
           onClose={() => setCashierOpen(false)}
           onOpenFunds={() => {
             setCashierOpen(false);

@@ -1,5 +1,6 @@
 "use client";
 
+import dynamic from "next/dynamic";
 import { useMemo, useState } from "react";
 import { useTranslations } from "next-intl";
 import { track } from "@/lib/analytics/mixpanel";
@@ -16,6 +17,14 @@ import {
   type ArkadeBadgeTone,
 } from "@/features/casino/components/arkade-game-card";
 import { ArkadeFeaturedBanner } from "@/features/casino/components/arkade-featured-banner";
+import { ARKADE_CAMPAIGN_BANNER_HIDDEN } from "@/features/casino/lib/arkade-campaign";
+const ArkadeCampaignBanner = dynamic(
+  () =>
+    import("@/features/casino/components/campaign/arkade-campaign-banner").then(
+      (module) => module.ArkadeCampaignBanner
+    ),
+  { ssr: false }
+);
 import { ArkadeSectionHeader } from "@/features/casino/components/arkade-section-header";
 import { FEATURED_STATS } from "@/features/casino/lib/featured";
 import { SearchIcon, WalletIcon } from "@/components/ui/icons";
@@ -193,6 +202,10 @@ export function ArkadeMobile({
 
       {/* Shine, above the fold for the same reason as on the desktop hub: it
           is on by default and posts without asking. */}
+
+      {/* The weekly campaign, above the featured game. Resting layout only,
+          like the featured banner; nothing without a session or a campaign. */}
+      {!searching && !ARKADE_CAMPAIGN_BANNER_HIDDEN ? <ArkadeCampaignBanner /> : null}
 
       {/* Featured banner, resting layout only (2234:11192). */}
       {!searching && featured.length > 0 ? (

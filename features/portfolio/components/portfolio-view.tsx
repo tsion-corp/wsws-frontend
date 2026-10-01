@@ -72,6 +72,9 @@ interface PortfolioViewProps {
       money is still in the old wallet. Both owned by the route: they belong to
       another feature, and features never import each other. */
   updateBalanceSlot?: ReactNode;
+  /** The Arkade campaign banner, above the balance row. Owned by the route
+      for the same reason: it belongs to the casino feature. */
+  campaignSlot?: ReactNode;
   maskForMigration?: boolean;
   onOpenDetail: (detail: DetailPayload) => void;
   onOpenBuy: (buy: BuyPayload) => void;
@@ -92,6 +95,7 @@ export function PortfolioView({
   onOpenWithdraw,
   onTakeTour,
   updateBalanceSlot,
+  campaignSlot,
   maskForMigration,
   // crossBorderSlot is unused while the section below is commented out.
   onOpenDetail,
@@ -361,6 +365,13 @@ export function PortfolioView({
           Desktop never sees any of this; it is inside md:hidden and shows both
           cards side by side below. */}
       <div className="md:hidden">
+        {/* Main's campaign slot stays OUTSIDE the reveal: the reveal
+            measures its own block's offset down the page, and a campaign
+            that appears or disappears above the cards would move that
+            measurement rather than the cards. It is re-read every frame, so
+            a campaign arriving late is handled either way — but keeping it
+            out means the reveal is measuring the cards and nothing else. */}
+        {campaignSlot ? <div className="mb-3">{campaignSlot}</div> : null}
         <BalanceReveal>
           {(card) => (
             <BalanceCarousel card={card}>
@@ -405,6 +416,7 @@ export function PortfolioView({
       </div>
 
       {/* Desktop: the side-by-side grid. */}
+      {campaignSlot ? <div className="mb-3 hidden md:block">{campaignSlot}</div> : null}
       <div className="hidden gap-3 md:grid lg:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)] xl:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)]">
         <BalanceCard
           onOpenFunds={onOpenFunds}

@@ -5,6 +5,12 @@ import { NextIntlClientProvider } from "next-intl";
 import enMessages from "@/messages/en.json";
 import { CASINO_GAMES, type CasinoGame } from "@/features/casino/lib/games";
 
+// The campaign banner reads the session and the campaign query; here it is a
+// marker, because these tests are about the hub's own layout.
+vi.mock("@/features/casino/components/campaign/arkade-campaign-banner", () => ({
+  ArkadeCampaignBanner: () => <div data-testid="campaign-banner" />,
+}));
+
 vi.mock("@/lib/analytics/mixpanel", () => ({ track: vi.fn() }));
 // The surface reads the wallet balance for the header pill; the balance itself
 // is not under test, so the hook is stubbed to a settled, empty portfolio.
@@ -113,6 +119,13 @@ const poker: CasinoGame = {
 const sample = [chess, arkball, lastMan, ayo];
 
 describe("ArkadeMobile", () => {
+  // Built, and hidden by the team's call (2026-09-30). The mount stays behind
+  // ARKADE_CAMPAIGN_BANNER_HIDDEN so showing it again is one flag.
+  it("does not mount the campaign banner while it is hidden", () => {
+    renderMobile(<ArkadeMobile games={sample} />);
+    expect(screen.queryByTestId("campaign-banner")).toBeNull();
+  });
+
   beforeEach(() => tracked.mockClear());
 
   it("draws the featured banner ahead of the rails when nothing is filtered", () => {
