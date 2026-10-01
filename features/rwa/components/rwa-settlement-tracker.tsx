@@ -9,6 +9,7 @@ import { reportShine } from "@/lib/shine";
 import { usePortfolio } from "@/hooks/use-portfolio";
 import { useSettlementReconciler } from "@/hooks/use-settlement-reconciler";
 import { track } from "@/lib/analytics/mixpanel";
+import { tradeAmounts } from "@/lib/analytics/trade-amounts";
 import { toast } from "@/lib/toast";
 import {
   clearPendingRwaSettlement,
@@ -79,11 +80,20 @@ export function RwaSettlementTracker() {
         clearPendingRwaSettlement(settlement.requestId);
         await refetchFresh(CROSS_CHAIN);
         void refetchUntilChanged(CROSS_CHAIN);
+        // The USDC this leg spent, exactly: it is the build's own input.
         track("trade_completed", {
-          vertical: "real_asset",
+          vertical: "rwa",
           asset: purchase.assetSymbol,
           side: "buy",
-          amount_usd: Number(amountInRaw) / 1_000_000,
+          ...tradeAmounts({
+            usdRaw: amountInRaw,
+            usdDecimals: payToken.decimals,
+            tokenRaw: null,
+            tokenDecimals: null,
+            source: "fill",
+          }),
+          order_id: settlement.requestId,
+          token_address: purchase.assetAddress,
         });
         toast.success(t("purchaseBackgroundComplete", { symbol: purchase.assetSymbol }));
       } catch (error) {

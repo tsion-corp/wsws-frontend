@@ -2,7 +2,7 @@
 
 import { useTranslations } from "next-intl";
 import { squareLinks } from "@/lib/square/links";
-import { SquareAvatar } from "@/features/square/components/square-avatar";
+import { SquareAvatar } from "@/components/ui/square-avatar";
 import type { MarketSquareHouse } from "@/lib/api/market-square";
 
 /** A design unit of the 356-wide card, as a share of its real width. */
@@ -123,8 +123,6 @@ export function SquareHouseCard({ house }: { house: MarketSquareHouse }) {
         {href ? (
           <a
             href={href}
-            target="_blank"
-            rel="noopener noreferrer"
             className="ws-pressable absolute flex items-center font-medium text-white transition-opacity hover:opacity-90"
             style={{
               left: u(276.8),

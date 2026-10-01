@@ -2,19 +2,17 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { usePrivy, useSignMessage } from "@privy-io/react-auth";
-import {
-  useSignMessage as useSolanaSignMessage,
-  useWallets as useSolanaWallets,
-} from "@privy-io/react-auth/solana";
+import { useSocialWallet } from "decane-connect-kit";
 import { useEvmSendWithReceipt } from "@/hooks/use-evm-send";
 import { usePortfolio } from "@/hooks/use-portfolio";
 import { useSponsoredSolanaSend } from "@/hooks/use-sponsored-solana";
 import { formatReceived, receivedFromLogs, type ReceiptLog } from "@/lib/meme/delivery";
+import { swapTradeAmounts, type TradeAmounts } from "@/lib/analytics/trade-amounts";
 import { formatUsdcAtomic } from "@/lib/meme/format";
 import { memePortfolioKeys } from "@/lib/meme/portfolio";
 import { isSubmittedEvmOperationError } from "@/lib/trade/sponsor";
-import { getWalletAddress } from "@/lib/user";
+import { useAuthSession } from "@/hooks/use-auth-session";
+import { ensureUnlocked } from "@/lib/decane";
 import {
   TradeApiError,
   createSolanaWalletChallenge,
@@ -34,7 +32,6 @@ import {
   type SwapStatus,
 } from "@/lib/meme/api";
 import { SOLANA_CHAIN_ID, networkOf } from "@/lib/meme/chain";
-import { signatureToBase58 } from "@/lib/meme/solana-signature";
 import { track } from "@/lib/analytics/mixpanel";
 import { reportTradeRecordingMismatch } from "@/lib/analytics/watchtower";
 import { reportShine, type EntryPrice } from "@/lib/shine";
@@ -50,6 +47,12 @@ import { swapShineFacts } from "@/features/trade/lib/shine-trade";
 
 export interface MemeTradeInput extends Omit<SwapRequest, "walletAddress"> {
   chainId: number;
+  /**
+   * Called once the swap has been sent and registered with the trade service,
+   * with its swap id. This is the moment an order exists, before any verdict
+   * on it; analytics reports `trade_submitted` from here.
+   */
+  onSubmitted?: (swapId: string) => void;
   /**
    * Which service's Shine decides whether this trade is posted.
    *
@@ -103,6 +106,15 @@ export interface TradeResult {
   outcome: TradeOutcome;
   swapId: string | null;
   requestId: string | null;
+  /**
+   * What the trade is worth and how many tokens moved, for analytics: the
+   * quote's exact input leg and the receipt's proof of what arrived. Null when
+   * the swap cannot be priced in USDC (a Solana quote states no amounts), in
+   * which case the caller prices it from its own quote.
+   */
+  amounts: TradeAmounts | null;
+  /** The swap transaction's hash, when the chain returned one. */
+  txHash: string | null;
 }
 
 // The support reference for a delivered or pending trade, as shown on screen:
@@ -140,7 +152,29 @@ export type TradePhase =
   | "pending"
   | "failed";
 
-const LINKED_KEY = "wsws.meme-linked.v1";
+// v3. v2 keyed entries on the wallet alone, on the mistaken belief that only
+// Privy had a user id. Decane's token carries `uid`, and that is exactly the
+// subject the trade service stamps into the challenge and matches in
+// assertOwnership — so a wallet-only key claims "linked" without saying to
+// whom, and a second identity on the same device skips the link it needs.
+const LINKED_KEY = "wsws.meme-linked.v3";
+
+// The subject the trade service links a wallet to: the Decane token's `uid`.
+// Read for the cache key only — the server verifies the token itself and this
+// never trusts the contents.
+function decaneUserId(token: string | null): string | null {
+  if (!token) return null;
+  try {
+    const payload = token.split(".")[1];
+    if (!payload) return null;
+    const json = JSON.parse(atob(payload.replace(/-/g, "+").replace(/_/g, "/"))) as {
+      uid?: unknown;
+    };
+    return typeof json.uid === "string" ? json.uid : null;
+  } catch {
+    return null;
+  }
+}
 // The service's verification usually lands within a few seconds of the
 // receipt: look early, then back off so a slow one is not asked every four
 // seconds for as long as it takes.
@@ -195,6 +229,19 @@ function linkedCache(): Set<string> {
     return new Set(JSON.parse(window.localStorage.getItem(LINKED_KEY) ?? "[]") as string[]);
   } catch {
     return new Set();
+  }
+}
+
+// Drops one wallet's hint, never the whole set: the other chain's wallet is
+// linked independently and must not be charged a second signature for this
+// chain's failure.
+function forgetLinked(key: string) {
+  try {
+    const set = linkedCache();
+    set.delete(key);
+    window.localStorage.setItem(LINKED_KEY, JSON.stringify([...set]));
+  } catch {
+    // Storage can be blocked; the hint is only an optimisation.
   }
 }
 
@@ -260,16 +307,12 @@ function reportConfirmedSwap(quote: PreparedSwap, service: "memecoin" | "spot"):
 }
 
 export function useMemeTrade() {
-  const { user } = usePrivy();
-  const { signMessage } = useSignMessage();
-  const { signMessage: signSolanaMessage } = useSolanaSignMessage();
-  const { wallets: solanaWallets } = useSolanaWallets();
+  const { evmAddress: wallet, solanaAddress: solanaWallet } = useAuthSession();
+  const socialWallet = useSocialWallet();
   const evmSend = useEvmSendWithReceipt();
   const { applyReceipt } = usePortfolio();
   const sendSponsoredSolana = useSponsoredSolanaSend();
   const queryClient = useQueryClient();
-  const wallet = getWalletAddress(user, "ethereum");
-  const solanaWallet = getWalletAddress(user, "solana");
 
   const walletFor = useCallback(
     (chainId: number): string | null => (chainId === SOLANA_CHAIN_ID ? solanaWallet : wallet),
@@ -310,37 +353,45 @@ export function useMemeTrade() {
   // repeat trades skip the signature. The backend stays authoritative: an
   // ownership mismatch clears the cache and relinks once.
   const ensureLinked = useCallback(
-    async (chainId: number) => {
-      if (!user) throw new Error("Sign in first.");
+    async (chainId: number, { force = false }: { force?: boolean } = {}) => {
+      if (!wallet) throw new Error("Sign in first.");
+      // No subject means no safe way to say who a cached entry belongs to, so
+      // the link is simply re-run rather than trusted.
+      const subject = decaneUserId(socialWallet.getAccessToken?.() ?? null);
       if (chainId === SOLANA_CHAIN_ID) {
         // The Solana sibling: the same challenge shape, signed as raw bytes
         // by the embedded Solana wallet, and sent back as base58. The address
         // is never lowercased, on the wire or in the cache key.
         if (!solanaWallet) throw new Error("Sign in first.");
-        const key = `${user.id}:solana:${solanaWallet}`;
-        if (linkedCache().has(key)) return;
-        const signer = solanaWallets.find((w) => w.address === solanaWallet);
-        if (!signer) throw new Error("Your Solana wallet is still connecting. Try again.");
+        const key = subject ? `${subject}:solana:${solanaWallet}` : null;
+        if (key && force) forgetLinked(key);
+        else if (key && linkedCache().has(key)) return;
         setPhase("linking");
         const challenge = await createSolanaWalletChallenge(solanaWallet);
-        const { signature } = await signSolanaMessage({
-          message: new TextEncoder().encode(challenge.message),
-          wallet: signer,
-        });
-        await verifySolanaWallet(challenge.challengeId, signatureToBase58(signature));
-        markLinked(key);
+        await ensureUnlocked(socialWallet);
+        // Decane returns the Solana signature already base58-encoded, which is
+        // the wire form verifySolanaWallet expects.
+        const signature = await socialWallet.signMessage("solana:mainnet", challenge.message);
+        await verifySolanaWallet(challenge.challengeId, signature);
+        if (key) markLinked(key);
         return;
       }
       if (!wallet) throw new Error("Sign in first.");
-      const key = `${user.id}:${wallet.toLowerCase()}`;
-      if (linkedCache().has(key)) return;
+      // The address is known before the signer for it is up, so check the
+      // signer exists rather than spending a challenge it cannot sign.
+      if (!socialWallet.isConnected) throw new Error("Your wallet is still connecting. Try again.");
+      const key = subject ? `${subject}:${wallet.toLowerCase()}` : null;
+      if (key && force) forgetLinked(key);
+      else if (key && linkedCache().has(key)) return;
       setPhase("linking");
       const challenge = await createWalletChallenge(wallet);
-      const { signature } = await signMessage({ message: challenge.message }, { address: wallet });
+      await ensureUnlocked(socialWallet);
+      // Meme trades run on Base, so the ownership proof signs there too.
+      const signature = await socialWallet.signMessage("evm:8453", challenge.message);
       await verifyWallet(challenge.challengeId, signature);
-      markLinked(key);
+      if (key) markLinked(key);
     },
-    [wallet, solanaWallet, solanaWallets, user, signMessage, signSolanaMessage]
+    [wallet, solanaWallet, socialWallet]
   );
 
   // Standalone linking for the preview path: the backend requires the wallet
@@ -350,7 +401,10 @@ export function useMemeTrade() {
   const linkForPreview = useCallback(
     async (chainId: number) => {
       try {
-        await ensureLinked(chainId);
+        // Forced: this only runs after the service said the wallet is not
+        // linked, so the browser's hint is wrong whatever it says. Trusting it
+        // here made the relink a no-op, and the preview refused forever.
+        await ensureLinked(chainId, { force: true });
         setPhase("idle");
       } catch (e) {
         setPhase("failed");
@@ -376,7 +430,7 @@ export function useMemeTrade() {
         swap_id: quote.swapId,
         recorded,
         request_id: ref ?? undefined,
-        hash: hash ?? undefined,
+        tx_hash: hash ?? undefined,
       });
       reportTradeRecordingMismatch({ swapId: quote.swapId, requestId: ref, hash, recorded });
       setRequestId(ref);
@@ -391,10 +445,9 @@ export function useMemeTrade() {
   const tradeSolana = useCallback(
     async (
       body: SwapRequest,
+      onSubmitted: ((swapId: string) => void) | undefined,
       shine: { service: "memecoin" | "spot"; tokenSymbol: string | undefined }
     ): Promise<TradeResult> => {
-      const signer = solanaWallets.find((w) => w.address === body.walletAddress);
-      if (!signer) throw new Error("Your Solana wallet is still connecting. Try again.");
       const runQuote = () => quoteWithProviderRetry((key) => quoteSolanaSwap(body, key));
 
       await ensureLinked(SOLANA_CHAIN_ID);
@@ -403,13 +456,8 @@ export function useMemeTrade() {
       try {
         quote = await runQuote();
       } catch (e) {
-        if (e instanceof TradeApiError && e.code === "WALLET_OWNERSHIP_MISMATCH" && user) {
-          try {
-            window.localStorage.removeItem(LINKED_KEY);
-          } catch {
-            /* cache only */
-          }
-          await ensureLinked(SOLANA_CHAIN_ID);
+        if (e instanceof TradeApiError && e.code === "WALLET_OWNERSHIP_MISMATCH" && wallet) {
+          await ensureLinked(SOLANA_CHAIN_ID, { force: true });
           setPhase("quoting");
           quote = await runQuote();
         } else {
@@ -429,20 +477,34 @@ export function useMemeTrade() {
       setPhase("signing");
       // The sponsor reseats itself as fee payer BEFORE the user signs, and
       // nothing touches the transaction after; that order is the contract.
+      //
+      // prefundRent also reseats the rent payer named INSIDE an associated
+      // token account creation, which the fee-payer seat does not cover. A
+      // swap that opens an account the taker does not have yet — the output
+      // mint, or wrapped SOL — otherwise bills that rent to the taker's own
+      // wallet. Selling a token is exactly when that wallet is empty of SOL,
+      // which is the case sponsorship exists for, so it is always on here.
+      // Same rule the withdraw, migration and RWA paths already follow.
       const signature = await sendSponsoredSolana({
         transaction: quote.unsignedTransactionBase64,
-        wallet: signer,
-        prefundRent: false,
+        prefundRent: true,
       });
       await registerSolanaSubmission(quote.swapId, body.walletAddress, signature);
       setSettled({ txHash: signature, chainId: SOLANA_CHAIN_ID });
+      onSubmitted?.(quote.swapId);
 
       setPhase("confirming");
       const status = await awaitTerminalStatus(quote.swapId);
       if (status === null) {
         console.warn(`[meme] swap ${quote.swapId} still not terminal after the poll ceiling`);
         setPhase("pending");
-        return { outcome: "pending", swapId: quote.swapId, requestId: null };
+        return {
+          outcome: "pending",
+          swapId: quote.swapId,
+          requestId: null,
+          amounts: null,
+          txHash: signature,
+        };
       }
       if (status === "CONFIRMED") {
         refreshServicePortfolio();
@@ -462,23 +524,32 @@ export function useMemeTrade() {
           // the trade and no figure.
           price: null,
         });
-        return { outcome: "confirmed", swapId: quote.swapId, requestId: null };
+        return {
+          outcome: "confirmed",
+          swapId: quote.swapId,
+          requestId: null,
+          amounts: null,
+          txHash: signature,
+        };
       }
       throw new TradeApiError(status, "The trade didn't complete.", 200);
     },
-    [solanaWallets, ensureLinked, user, sendSponsoredSolana, refreshServicePortfolio]
+    [ensureLinked, wallet, sendSponsoredSolana, refreshServicePortfolio]
   );
 
   const trade = useCallback(
     async ({
       chainId,
+      onSubmitted,
       shineService = "memecoin",
       tokenSymbol,
       ...input
     }: MemeTradeInput): Promise<TradeResult> => {
       // A second press while one runs is the same action, not a new one, and
       // nothing is known about it yet.
-      if (activeRef.current) return { outcome: "pending", swapId: null, requestId: null };
+      if (activeRef.current) {
+        return { outcome: "pending", swapId: null, requestId: null, amounts: null, txHash: null };
+      }
       const chainWallet = walletFor(chainId);
       if (!chainWallet) throw new Error("Sign in first.");
       activeRef.current = true;
@@ -491,10 +562,10 @@ export function useMemeTrade() {
         if (chainId === SOLANA_CHAIN_ID) {
           // The Shine facts travel beside the request rather than inside it:
           // they are not part of the swap and must never reach the wire.
-          return await tradeSolana(
-            { ...input, walletAddress: chainWallet },
-            { service: shineService, tokenSymbol }
-          );
+          return await tradeSolana({ ...input, walletAddress: chainWallet }, onSubmitted, {
+            service: shineService,
+            tokenSymbol,
+          });
         }
         const wallet = chainWallet;
         const body: SwapRequest = { ...input, walletAddress: wallet };
@@ -507,13 +578,8 @@ export function useMemeTrade() {
           quote = await runQuote();
         } catch (e) {
           // A stale linked-cache entry: relink once, then quote again.
-          if (e instanceof TradeApiError && e.code === "WALLET_OWNERSHIP_MISMATCH" && user) {
-            try {
-              window.localStorage.removeItem(LINKED_KEY);
-            } catch {
-              /* cache only */
-            }
-            await ensureLinked(chainId);
+          if (e instanceof TradeApiError && e.code === "WALLET_OWNERSHIP_MISMATCH" && wallet) {
+            await ensureLinked(chainId, { force: true });
             setPhase("quoting");
             quote = await runQuote();
           } else {
@@ -596,11 +662,16 @@ export function useMemeTrade() {
           }
         }
 
+        // Every call has been sent and registered (or refused as already
+        // recorded): the order exists, whatever the service says about it next.
+        onSubmitted?.(quote.swapId);
+
         // The swap's receipt is in hand, and its own logs say what the wallet
         // was paid: proof of delivery with no balance read, while the
         // server's formal verification finishes in the background.
         const received = receivedFromLogs(receivedLogs, receivedToken, wallet as `0x${string}`);
         const delivered = received !== null && received > 0n;
+        const amounts = swapTradeAmounts(quote, delivered ? received : null);
         if (delivered) {
           setReceived({
             amount: formatReceived(received, quote.buyToken.decimals ?? 18),
@@ -623,6 +694,8 @@ export function useMemeTrade() {
             outcome: "delivered",
             swapId: quote.swapId,
             requestId: registrationRefused.requestId,
+            amounts,
+            txHash: settledHash,
           };
         }
 
@@ -637,7 +710,13 @@ export function useMemeTrade() {
             `[meme] swap ${quote.swapId} (${settledHash ?? "no hash"}) still not terminal after the poll ceiling`
           );
           setPhase("pending");
-          return { outcome: "pending", swapId: quote.swapId, requestId: null };
+          return {
+            outcome: "pending",
+            swapId: quote.swapId,
+            requestId: null,
+            amounts,
+            txHash: settledHash,
+          };
         }
         if (status === "CONFIRMED") {
           refreshServicePortfolio();
@@ -647,7 +726,13 @@ export function useMemeTrade() {
           // here for a confirmed swap. Nothing re-enters this branch on a
           // re-render, a refetch or a remount.
           reportConfirmedSwap(quote, shineService);
-          return { outcome: "confirmed", swapId: quote.swapId, requestId: null };
+          return {
+            outcome: "confirmed",
+            swapId: quote.swapId,
+            requestId: null,
+            amounts,
+            txHash: settledHash,
+          };
         }
         // The wallet's balance moved: the trade happened, whatever the
         // service recorded. Its verifier compares a sponsored user
@@ -659,7 +744,13 @@ export function useMemeTrade() {
         // team.
         if (delivered) {
           settleAsDelivered(quote, settledHash, status, null);
-          return { outcome: "delivered", swapId: quote.swapId, requestId: null };
+          return {
+            outcome: "delivered",
+            swapId: quote.swapId,
+            requestId: null,
+            amounts,
+            txHash: settledHash,
+          };
         }
         throw new TradeApiError(status, "The trade didn't complete.", 200);
       } catch (e) {
@@ -672,7 +763,7 @@ export function useMemeTrade() {
     },
     [
       walletFor,
-      user,
+      wallet,
       ensureLinked,
       evmSend,
       applyReceipt,
@@ -775,6 +866,8 @@ export function usePreviewRelink(
     linkForPreview(chainId)
       .then(() => refetch())
       .catch((e: unknown) => {
+        // Only a link that happened counts as the one attempt.
+        triedRef.current.delete(chainId);
         console.warn("[meme] linking the wallet for a preview failed", e);
       });
   }, [error, chainId, linkForPreview, refetch]);

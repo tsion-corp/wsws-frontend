@@ -8,8 +8,16 @@ import type { ShineService } from "@/lib/shine";
 const post = vi.hoisted(() => vi.fn(async () => ({ id: "post-1" })));
 vi.mock("@/lib/api/market-square", () => ({ createSquarePost: post }));
 
-const privy = vi.hoisted(() => ({ user: { id: "did:privy:alice" } as { id: string } | null }));
-vi.mock("@privy-io/react-auth", () => ({ usePrivy: () => privy }));
+const session = vi.hoisted(() => ({
+  ready: true,
+  authenticated: true,
+  userId: "did:privy:alice" as string | null,
+  evmAddress: null as string | null,
+  solanaAddress: null as string | null,
+  profile: { name: "u", email: "", avatarSeed: "u" },
+  logout: async () => {},
+}));
+vi.mock("@/hooks/use-auth-session", () => ({ useAuthSession: () => session }));
 
 // `isOn` is what the switch draws and is ON while the record loads; `mayPost`
 // is the decision. The provider must read the second one, so the stub keeps
@@ -60,7 +68,7 @@ function mount(locale: "en" | "fr") {
 beforeEach(() => {
   window.localStorage.clear();
   configureShine(null);
-  privy.user = { id: "did:privy:alice" };
+  session.userId = "did:privy:alice";
   shine.mayPost = () => true;
   shine.isOn = () => true;
   post.mockClear();
@@ -107,6 +115,20 @@ describe("installing the Shine runtime", () => {
     expect(post).toHaveBeenLastCalledWith("J’ai foncé sur $PEPE à $0.0000042.");
   });
 
+  it("posts nothing while paused, whatever the preferences say", async () => {
+    // The session providers pause it while an account upgrade is pending: a
+    // post under an id whose old Square profile is not linked yet would make
+    // the Square's placeholder profile somebody's account.
+    render(
+      <NextIntlClientProvider locale="en" messages={en}>
+        <ShineRuntimeProvider paused />
+      </NextIntlClientProvider>
+    );
+    reportShine(buy("swap-9"));
+    await whenShineIdle();
+    expect(post).not.toHaveBeenCalled();
+  });
+
   it("gates on mayPost, not on what the switch is drawing", async () => {
     // The account's record has not arrived: the switch shows ON, and nothing
     // may be published on that.
@@ -146,7 +168,7 @@ describe("installing the Shine runtime", () => {
   });
 
   it("posts nothing while there is no account to key the record by", async () => {
-    privy.user = null;
+    session.userId = null;
     mount("en");
     reportShine(buy("swap-6"));
     await whenShineIdle();

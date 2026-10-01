@@ -1,16 +1,23 @@
 "use client";
+import { useAuthSession } from "@/hooks/use-auth-session";
 
 import { useCallback, useState } from "react";
-import { usePrivy } from "@privy-io/react-auth";
+import { useSocialWallet } from "decane-connect-kit";
 import { decodeEventLog } from "viem";
-import { getWalletAddress } from "@/lib/user";
 import { awaitReceipt, publicClientForChain } from "@/lib/trade/receipt";
 import { useEvmSendBatch } from "@/hooks/use-evm-send";
 import { KING_OF_NIGHT_V5_ABI } from "@/lib/vault/king-of-night-v5-abi";
 import { claimCall, settleCall, startGameCalls, wagerCalls } from "@/lib/vault/v5-calls";
 import { VAULT_CHAIN_ID, vaultContractAddress } from "@/lib/vault/contract";
 import { vaultLog } from "@/features/casino/lib/last-standing/log";
-import { registerVaultTransaction } from "@/features/casino/lib/vault-api";
+import { registerVaultTransaction, submitGameMetadata } from "@/features/casino/lib/vault-api";
+import { ensureUnlocked } from "@/lib/decane";
+import {
+  metadataMessage,
+  metadataProblem,
+  normalizeMetadata,
+  type GameMetadataInput,
+} from "@/features/casino/lib/last-standing/game-metadata";
 
 // The compiled artifact, never a transcription: a hand-typed GameStarted with
 // four fields hashed to a topic that matched no log and lost every gameId.
@@ -18,6 +25,9 @@ import { registerVaultTransaction } from "@/features/casino/lib/vault-api";
 const VAULT_ABI = KING_OF_NIGHT_V5_ABI;
 
 const contractAddress = vaultContractAddress;
+
+/** Where a start has got to, for the button that has to say so. */
+export type VaultStartPhase = "idle" | "sending" | "confirming";
 
 // The gameId is only knowable from the receipt: startGame() returns it, but a
 // return value is not readable from a sent transaction, so it comes off the
@@ -46,23 +56,63 @@ function gameIdFromReceipt(logs: readonly { data: string; topics: string[] }[]):
  * confirmation so the caller's refetch reflects the result.
  */
 export function useVaultActions() {
-  const { user } = usePrivy();
+  const { evmAddress } = useAuthSession();
   // Every action is one atomic sponsored user operation. An ERC-20 stake needs
   // an allowance before the vault can pull it, and sending the two in sequence
   // against a 60-second clock leaves a window where the game settles in between
   // and the second call reverts on an allowance that is already standing.
   // Nothing here prompts the player: signing is headless.
   const sendBatch = useEvmSendBatch();
-  const [starting, setStarting] = useState(false);
+  const socialWallet = useSocialWallet();
+  // The start button's phases. "sending" is the wallet doing its work,
+  // "confirming" is Base accepting it. They were one boolean, which made a
+  // twelve second wait look like a button that had stopped responding.
+  const [startPhase, setStartPhase] = useState<VaultStartPhase>("idle");
+  const starting = startPhase !== "idle";
   const [wagering, setWagering] = useState(false);
   const [claiming, setClaiming] = useState(false);
   const [settling, setSettling] = useState(false);
 
   const owner = useCallback((): `0x${string}` => {
-    const address = getWalletAddress(user, "ethereum");
+    const address = evmAddress;
     if (!address) throw new Error("No EVM wallet is connected.");
     return address as `0x${string}`;
-  }, [user]);
+  }, [evmAddress]);
+
+  /**
+   * Signs and sends a game's name. Separate from the transaction on purpose:
+   * the contract has no idea a game has a title, and the vault keys the
+   * submission on the hash because the gameId does not exist until the
+   * transaction mines.
+   *
+   * Never throws. The caller has already opened a game by the time this runs.
+   */
+  const nameGame = useCallback(
+    async (hash: string, metadata: GameMetadataInput): Promise<void> => {
+      if (metadataProblem(metadata) !== null) return;
+      try {
+        const signer = owner();
+        const normalized = normalizeMetadata(metadata);
+        const timestamp = Date.now();
+        await ensureUnlocked(socialWallet);
+        const signature = await socialWallet.signMessage(
+          `evm:${VAULT_CHAIN_ID}`,
+          metadataMessage(hash, normalized, timestamp)
+        );
+        await submitGameMetadata({
+          txHash: hash,
+          title: normalized.title,
+          description: normalized.description,
+          signer,
+          signature,
+          timestamp,
+        });
+      } catch (error) {
+        vaultLog("naming the game failed", { hash, error: String(error) });
+      }
+    },
+    [owner, socialWallet]
+  );
 
   /**
    * Opens a game at `stake` base units of the game asset (USDC, 6 decimals).
@@ -71,25 +121,37 @@ export function useVaultActions() {
    * the number the sheet shows, not a floor.
    */
   const startGame = useCallback(
-    async (stake: bigint): Promise<{ hash: string; gameId: number | null }> => {
+    async (
+      stake: bigint,
+      metadata?: GameMetadataInput,
+      isPrivate = false
+    ): Promise<{ hash: string; gameId: number | null }> => {
       const address = owner();
-      setStarting(true);
       try {
         const client = publicClientForChain(VAULT_CHAIN_ID);
-        const hash = await sendBatch(startGameCalls(contractAddress(), stake), VAULT_CHAIN_ID);
+        setStartPhase("sending");
+        const hash = await sendBatch(
+          startGameCalls(contractAddress(), stake, isPrivate),
+          VAULT_CHAIN_ID
+        );
+        setStartPhase("confirming");
         const receipt = await awaitReceipt(client, hash, "Your game");
         // Tell the service about the hash so it indexes this game now rather
         // than when its own poll reaches the block. It closes the window where
         // a game the player has just paid for is not yet in /games.
         void registerVaultTransaction(hash);
+        // The name, if one was typed. After the transaction because the hash is
+        // what it is keyed on, and not awaited because the game is already open:
+        // a refused name costs a label, never the game.
+        if (metadata) void nameGame(hash, metadata);
         const gameId = gameIdFromReceipt(receipt?.logs ?? []);
         vaultLog("tx startGame confirmed", { hash, gameId, stake: stake.toString(), address });
         return { hash, gameId };
       } finally {
-        setStarting(false);
+        setStartPhase("idle");
       }
     },
-    [owner, sendBatch]
+    [owner, sendBatch, nameGame]
   );
 
   /** Joins a game with `amount` base units, which must clear its own minWager. */
@@ -162,5 +224,15 @@ export function useVaultActions() {
     [owner, sendBatch]
   );
 
-  return { startGame, starting, wager, wagering, claim, claiming, settle, settling };
+  return {
+    startGame,
+    starting,
+    startPhase,
+    wager,
+    wagering,
+    claim,
+    claiming,
+    settle,
+    settling,
+  };
 }

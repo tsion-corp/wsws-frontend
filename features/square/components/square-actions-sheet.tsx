@@ -10,7 +10,7 @@ import {
   fetchTrendingDiscussions,
 } from "@/lib/api/market-square";
 import { squareLinks } from "@/lib/square/links";
-import { SquareAvatar } from "@/features/square/components/square-avatar";
+import { SquareAvatar } from "@/components/ui/square-avatar";
 import { GoLiveControl } from "@/components/broadcast/go-live-control";
 import { DiscussionRail } from "@/features/square/components/discussion-rail";
 
@@ -137,8 +137,6 @@ export function SquareActionsSheet({
           {bellHref ? (
             <a
               href={bellHref}
-              target="_blank"
-              rel="noopener noreferrer"
               aria-label={count > 0 ? t("notificationsWithCount", { count }) : t("notifications")}
               className="text-grey-400 hover:text-grey-100 relative shrink-0 p-1.5 transition-colors"
             >
@@ -235,8 +233,6 @@ export function SquareActionsSheet({
         {profileHref ? (
           <a
             href={profileHref}
-            target="_blank"
-            rel="noopener noreferrer"
             className="text-grey-400 hover:text-grey-100 mt-4 inline-block text-[12.5px] font-medium transition-colors"
           >
             {t("openProfile")}

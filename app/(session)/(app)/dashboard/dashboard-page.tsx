@@ -1,11 +1,27 @@
 "use client";
 
 import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import dynamic from "next/dynamic";
 import { useSearchParams } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { toast } from "@/lib/toast";
 import { useAppChrome, useReportActiveSection } from "@/components/layout/app-chrome";
 import { PortfolioView } from "@/features/portfolio";
+import { ARKADE_CAMPAIGN_BANNER_HIDDEN } from "@/features/casino/lib/arkade-campaign";
+// The campaign banner and the modal behind it are the casino's; deferred, so
+// the dashboard's first load does not carry them. It renders nothing without
+// a session or a campaign, and a null slot leaves the view exactly as it was.
+const ArkadeCampaignBanner = dynamic(
+  () =>
+    import("@/features/casino/components/campaign/arkade-campaign-banner").then(
+      (module) => module.ArkadeCampaignBanner
+    ),
+  { ssr: false }
+);
+// Deep import, not the @/features/migrate barrel: that barrel re-exports the
+// sweep button, which mounts the whole Privy SDK. This hook is light — a
+// localStorage read, the migration status, and one cached lookup.
+import { useMaskBalance } from "@/features/migrate/hooks/use-offer-migration";
 import { SectionOverview } from "@/components/ui/section-overview";
 import { SpotOverview } from "@/features/trade/components/spot-overview";
 import { PerpsOverview } from "@/features/trade/components/perps-overview";
@@ -16,10 +32,8 @@ import { ExploreBanners } from "@/components/layout/explore-banners";
 // also exports the full ActivityView and the remit barrel the CrossBorderModal;
 // neither renders here, and through the barrels both shipped in the dashboard's
 // first load. optimizePackageImports only rewrites npm barrels, not ours.
-import { DepositAnalytics } from "@/features/activity/components/deposit-analytics";
 import { SectionVisibility } from "@/components/ui/section-visibility";
 import { AppModalHost, useAppModals } from "@/components/layout/modals/app-modals";
-import { BankDepositAnalytics } from "@/features/funds";
 import { CrossBorderBanner } from "@/features/remit/components/cross-border-banner";
 import { RwaSettlementTracker } from "@/features/rwa/components/rwa-settlement-tracker";
 import { MemeSettlementTracker } from "@/features/trade/components/meme-settlement-tracker";
@@ -44,6 +58,7 @@ import { useSpotMarkets } from "@/features/trade/hooks/use-spot-markets";
 import { useScrollSpy } from "@/hooks/use-scroll-spy";
 import { useDepositPrefill } from "@/hooks/use-deposit-prefill";
 import { startDashboardTour, useDashboardTour } from "@/features/tour";
+import { useMigrationGateActive } from "@/features/migrate/lib/gate-state";
 // This page reads the square's SECTIONS switch, not the rail's. The rail links
 // out to the square's own deployment and follows MARKET_SQUARE_HIDDEN; what
 // renders here is the square's content, which is off on its own switch.
@@ -121,9 +136,6 @@ const INTERLEAVED_SQUARE: readonly ("live" | "posts" | "people" | undefined)[] =
 // scroll-spy anchor: every other nav entry is now a route of its own.
 const SCROLL_SECTIONS: readonly SectionId[] = ["portfolio"];
 
-// The briefs stay mounted at once, so memoize them: with a stable row count
-// they skip re-rendering when the page re-renders for a modal open/close. Each
-// still re-renders on its own data.
 const Portfolio = memo(PortfolioView);
 const Spot = memo(SpotOverview);
 const Perps = memo(PerpsOverview);
@@ -145,6 +157,16 @@ export function DashboardPage() {
   const tOverview = useTranslations("overview");
   const tRemit = useTranslations("remitBanner");
   const { nav } = useAppChrome();
+  // Hide the headline figure while the user's money is still in the old
+  // wallet, and show the sweep beside it. Decided here rather than in the
+  // portfolio feature: the rule belongs to the migration, and features never
+  // import each other. Comes off the moment a sweep lands anything.
+  // Whether this user has anything to move. The button checks it too and
+  // renders null when false — but next/dynamic fetches a chunk as soon as its
+  // host mounts, so an ungated host downloads the Privy SDK for every visitor
+  // to render nothing. Gated here, only the users being offered the sweep pay
+  // for it.
+  const maskForMigration = useMaskBalance();
   // Which section sits under the header is scroll state, not a route fact, so
   // the rail is told from here while this page is mounted.
   const activeSection = useScrollSpy(SCROLL_SECTIONS);
@@ -196,18 +218,20 @@ export function DashboardPage() {
   const rwaLeads = realAssetsLead(useInterest());
   // The square's feed tab lives here because two siblings drive it: the
   // section's own strip, and the plus sheet's discussions.
-  const [squareTab, setSquareTab] = useState<string | undefined>(undefined);
+  const [squareTab, setTab] = useState<string | undefined>(undefined);
   const openTopic = useCallback((key: string) => {
-    setSquareTab(`topic:${key}`);
+    setTab(`topic:${key}`);
     // Otherwise the tab changes off-screen and the tap reads as doing nothing.
     document.getElementById("market-square")?.scrollIntoView({ behavior: "smooth" });
   }, []);
   const openDiscussion = useCallback((tag: string) => {
-    setSquareTab(`tag:${tag}`);
+    setTab(`tag:${tag}`);
     // Otherwise the tab changes off-screen and the tap reads as doing nothing.
     document.getElementById("market-square")?.scrollIntoView({ behavior: "smooth" });
   }, []);
-  useDashboardTour();
+  // Hold the product tour until the migration gate is finished — it is a
+  // full-screen overlay and the tour must not open on top of it.
+  useDashboardTour({ suppressed: useMigrationGateActive() });
 
   // The balance card carries the walkthrough's replay button in the phone
   // design. The steps live on this page, so starting it here is a direct call;
@@ -296,13 +320,9 @@ export function DashboardPage() {
     <>
       <RwaSettlementTracker />
       <MemeSettlementTracker />
-      {/* Reports settled deposits. It used to ride on the recent-activity
-            list that stood here; it is mounted on its own now that history
-            lives only on its own page. */}
-      <DepositAnalytics />
-      {/* Follows a bank deposit to settlement so the arrival above can be
-            reported as the Naira deposit it is, rather than as a chain one. */}
-      <BankDepositAnalytics />
+      {/* Deposit and withdrawal reporting used to be mounted here, so a
+            deposit counted only if its owner came back to the dashboard. It
+            now runs from the session providers, on every signed-in page. */}
 
       {/* The account, in full. It is what someone opened Ark to see, and the
             only section that is not a doorway to somewhere else. */}
@@ -312,6 +332,8 @@ export function DashboardPage() {
           onOpenWithdraw={modals.openWithdraw}
           onTakeTour={takeTour}
           crossBorderSlot={<CrossBorderBanner onClick={openCrossBorder} />}
+          campaignSlot={ARKADE_CAMPAIGN_BANNER_HIDDEN ? null : <ArkadeCampaignBanner />}
+          maskForMigration={maskForMigration}
           onOpenDetail={modals.openDetail}
           onOpenBuy={modals.openBuy}
           onOpenSell={modals.openSell}
@@ -327,17 +349,21 @@ export function DashboardPage() {
           to a frame on a phone. The conversation row handles a hidden square
           itself: its card goes and its heading falls back to chess. */}
       <div className="flex flex-col gap-6 md:hidden">
+        {/* The Arkade's own shelf, one card per game. It leads the shelves,
+            directly under the balance cards and the promo strip, whatever was
+            picked at onboarding: it is what the platform is putting in front
+            of everyone, so it is not something an interest can push down. */}
+        <div className="px-4">
+          <ArkadeRow />
+        </div>
         {rwaLeads ? <div className="px-4">{realAssets}</div> : null}
         <div className="px-4">
           <ConversationRow />
         </div>
-        {/* The Arkade's own shelf, one card per game. It used to share the
-            band above with Square's rooms. */}
-        <div className="px-4">
-          <ArkadeRow />
-        </div>
         {/* "Your Next Prediction Starts Here" — the same discovery card the
-            desktop shows, on the phone with its horizontal gutter. */}
+            desktop shows, on the phone with its horizontal gutter. The Arkade
+            keeps the lead it was given in #562; this row returns to the slot
+            it held before #517, which is directly above Token Moves. */}
         <div className="px-4">
           <PredictionStartsRow markets={predictionSpots} />
         </div>
@@ -366,10 +392,15 @@ export function DashboardPage() {
       </div>
 
       {/* Desktop: the discovery shelves, as the phone design's desktop sibling
-          draws them under the balance cards — Token Moves, Join the
-          Conversation, the Arkade, Find the next 100X, then Prediction
-          starts. */}
+          draws them under the balance cards — the Arkade, Token Moves, Join
+          the Conversation, Own The Market, Find the next 100X, then
+          Prediction starts. */}
       <div className="mx-auto hidden w-full max-w-[1520px] flex-col gap-11 px-4 pb-2 sm:px-6 md:flex lg:px-8">
+        {/* The Arkade's own shelf, one card per game. It leads the shelves,
+            directly under the balance cards and the promo strip, whatever was
+            picked at onboarding: it is what the platform is putting in front
+            of everyone, so it is not something an interest can push down. */}
+        <ArkadeRow />
         {rwaLeads ? realAssets : null}
         <TokenMovesRow
           tokens={tokenSpots}
@@ -377,9 +408,6 @@ export function DashboardPage() {
           onBuy={discoveryTrade.onBuyToken}
         />
         <ConversationRow />
-        {/* The Arkade's own shelf, one card per game. It shared the band above
-            with Square's rooms until the two were split. */}
-        <ArkadeRow />
         {/* "Own The Market.": the perps desk's shelf, as the design draws it
             beside the conversation band. */}
         <OwnMarketRow />
@@ -450,7 +478,7 @@ export function DashboardPage() {
           onOpenBuy={modals.openBuy}
           markets={spotMarkets}
           tab={squareTab}
-          onTabChange={setSquareTab}
+          onTabChange={setTab}
         />
       )}
       {/* Fixed to the viewport, so it sits the same wherever it renders. It

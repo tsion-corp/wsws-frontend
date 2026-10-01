@@ -1,9 +1,9 @@
 "use client";
+import { useAuthSession } from "@/hooks/use-auth-session";
 
 import { useCallback, useMemo, useRef } from "react";
 import { usePathname } from "next/navigation";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { usePrivy } from "@privy-io/react-auth";
 import { apiFetch } from "@/lib/api";
 import { queryKeys } from "@/lib/query-keys";
 import { useSessionWallet } from "@/components/providers/server-session";
@@ -11,26 +11,44 @@ import type { Portfolio } from "@/lib/server/alchemy";
 import type { TokenBalance } from "@/lib/server/alchemy";
 import { freshParam, type FreshScope } from "@/lib/portfolio/fresh-scope";
 import { applyNativeDelta as moveNative, applyTransfers } from "@/lib/portfolio/apply-transfers";
+import { visibleTotalUsd } from "@/lib/portfolio/dust";
 import type { ReceiptLog } from "@/lib/meme/delivery";
 
 export type { Portfolio, TokenBalance } from "@/lib/server/alchemy";
 
-// Balances don't need second-by-second freshness, and every tick here is a
-// round trip through our now-cached but still real Alchemy call — a minute
-// is plenty for background polling. Anything that needs to see its own
-// effect immediately (e.g. right after a trade or withdrawal) calls
-// `refetch()` directly instead of waiting on this interval.
-const POLL_MS = 60 * 1000;
-// Off the portfolio page only the balance chip in the shell reads this, and
-// a trade gets its own scoped fresh read, so three minutes is plenty there
-// (ADR-2026-09-09-portfolio-polling-at-scale).
-const GLANCED_POLL_MS = 3 * 60 * 1000;
-// A partial response can mean one optional network among dozens timed out.
-// Retrying the entire portfolio every five seconds from every balance chip
-// caused chess pages to hammer Alchemy even when their Base balance was valid.
-// Dedicated balance pages recover sooner; all other pages stay on their normal
-// low-rate cadence. Explicit post-transaction refreshes are unaffected.
+// The balance is cache-first and event-driven: a stored value (rehydrated from
+// localStorage or the server prefetch) is painted at once, and the number is
+// re-read when it can actually have changed — a completed in-app transaction
+// (the ~30 refetchFresh / refetchUntilChanged call sites), a detected incoming
+// deposit, or a manual refresh. There is still no steady background poll: a
+// balance that is whole and recent costs nothing to show
+// (supersedes ADR-2026-09-09-portfolio-polling-at-scale).
+//
+// What a cached value must never do is outlive its own truth. A snapshot taken
+// while a chain was unreachable, or a read that failed outright, used to stay
+// on screen until the user found the refresh icon, which is how people ended up
+// with no balance at all. So three things re-read on their own: a value older
+// than BALANCE_STALE_MS when a screen mounts, the tab is focused or the network
+// returns; a failed read, at ERROR_RETRY_MS until it lands; and an incomplete
+// snapshot, below.
+//
+// An INCOMPLETE snapshot means a network did not answer, leaving the total a
+// floor. It heals at this cadence: anywhere if Base is what is missing, and on
+// a page devoted to balances for any other chain, so one slow optional network
+// cannot turn a chip on a game page into a cross-chain polling loop.
 const INCOMPLETE_BALANCE_PAGE_POLL_MS = 30_000;
+
+// How long a stored balance is shown without asking again. Long enough that
+// moving around the app costs no reads, short enough that a figure taken while
+// a chain was down cannot outlive the outage by more than one screen change.
+const BALANCE_STALE_MS = 5 * 60_000;
+
+// A failed read is retried at this cadence, paused in a hidden tab, until a
+// balance lands. Without it the only way back from a failure was the refresh
+// icon, which is how users ended up staring at no balance at all.
+const ERROR_RETRY_MS = 20_000;
+
+const BASE_NETWORK = "base-mainnet";
 
 function watchesBalance(pathname: string | null): boolean {
   if (!pathname) return true;
@@ -78,7 +96,7 @@ function tokenRawBalance(
 export type PortfolioScope = "all" | "base";
 
 export function usePortfolio({ scope = "all" }: { scope?: PortfolioScope } = {}) {
-  const { ready, authenticated } = usePrivy();
+  const { ready, authenticated, evmAddress, solanaAddress, profile } = useAuthSession();
   const queryClient = useQueryClient();
   // From the server's view of the session while Privy is still starting,
   // then from Privy. Building the key from Privy alone meant that, before it
@@ -87,6 +105,8 @@ export function usePortfolio({ scope = "all" }: { scope?: PortfolioScope } = {})
   const evm = useSessionWallet("ethereum");
   const solana = useSessionWallet("solana");
   const enabled = ready && authenticated && Boolean(evm || (scope === "all" && solana));
+  // Signed in, but no address to read a balance for yet.
+  const awaitingWallet = ready && authenticated && !enabled;
   const queryKey = useMemo(
     () =>
       scope === "base"
@@ -95,7 +115,6 @@ export function usePortfolio({ scope = "all" }: { scope?: PortfolioScope } = {})
     [scope, evm, solana]
   );
   const balancePage = watchesBalance(usePathname());
-  const pollMs = balancePage ? POLL_MS : GLANCED_POLL_MS;
   const fullPortfolioKey = queryKeys.portfolio.byWallet(evm, solana);
 
   // Set while waiting for a just-made trade to show up, naming the networks
@@ -150,13 +169,32 @@ export function usePortfolio({ scope = "all" }: { scope?: PortfolioScope } = {})
       return failureCount < 5;
     },
     retryDelay: (attempt) => Math.min(800 * 2 ** attempt, 4000),
-    staleTime: pollMs,
-    // Only a page devoted to balances accelerates recovery of a partial
-    // snapshot. Elsewhere (including chess), one optional failed network must
-    // not turn a cached balance chip into a cross-chain RPC polling loop.
-    refetchInterval: (query) =>
-      query.state.data?.missing?.length && balancePage ? INCOMPLETE_BALANCE_PAGE_POLL_MS : pollMs,
-    refetchOnWindowFocus: false,
+    // Cache-first, but not cache-forever. A stored balance is shown at once and
+    // is treated as fresh for this long, so moving between screens costs
+    // nothing; past it, the next mount, focus or reconnect reads once. Cache
+    // forever was how a wrong figure became permanent: a snapshot taken while
+    // a chain was unreachable stayed on screen until the user found the refresh
+    // icon. Base reads go to our own node, so the read is ours to make.
+    staleTime: BALANCE_STALE_MS,
+    refetchInterval: (query) => {
+      // A read that failed leaves nothing on screen, so it is retried on its
+      // own until it lands. This stops as soon as there is a balance.
+      if (query.state.status === "error") return ERROR_RETRY_MS;
+      // Heal a partial snapshot: anywhere when Base is the network that did not
+      // answer, since that is where the balance people mean lives and its reads
+      // go to our own node; elsewhere only on a page devoted to balances, so one
+      // slow optional chain cannot turn a chip on a game page into a poll.
+      const missing = query.state.data?.missing;
+      if (!missing?.length) return false;
+      return balancePage || missing.includes(BASE_NETWORK)
+        ? INCOMPLETE_BALANCE_PAGE_POLL_MS
+        : false;
+    },
+    // Both only act on a balance older than the stale window, or on one that
+    // failed. Coming back to the tab or back onto the network is exactly when a
+    // stale figure is worth one read.
+    refetchOnWindowFocus: true,
+    refetchOnReconnect: true,
   });
 
   const { refetch } = query;
@@ -248,12 +286,16 @@ export function usePortfolio({ scope = "all" }: { scope?: PortfolioScope } = {})
   );
 
   return {
-    totalUsd: query.data?.totalUsd ?? 0,
+    // Dust is left out: anyone can send unsolicited tokens to any address, and
+    // counting fractions of a cent made an untouched wallet read "<$0.01"
+    // instead of "$0.00". See lib/portfolio/dust.
+    totalUsd: query.data ? visibleTotalUsd(query.data.tokens) : 0,
     tokens: query.data?.tokens ?? EMPTY_TOKENS,
-    // Also loading while Privy is still starting and nothing has arrived
-    // from the server. The shell now renders before Privy is ready, and a
-    // balance that is merely unknown must not read as $0.00.
-    loading: query.isPending && (enabled || !ready),
+    // Also loading while Privy is still starting, and while a signed-in
+    // session has no wallet address yet: the shell renders before Privy is
+    // ready, Privy can still be creating the embedded wallet, and a balance
+    // that is merely unknown must not read as $0.00.
+    loading: query.isPending && (enabled || !ready || awaitingWallet),
     // True while a fresh fetch is in flight but a value (possibly a
     // rehydrated one from a previous session) is already on screen — lets
     // the UI show a subtle "refreshing" hint instead of silently swapping

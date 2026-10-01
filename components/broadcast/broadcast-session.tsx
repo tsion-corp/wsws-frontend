@@ -31,6 +31,7 @@ import {
 } from "react";
 import { usePathname } from "next/navigation";
 import { errorCode } from "@/lib/api/envelope";
+import { track } from "@/lib/analytics/mixpanel";
 import {
   createStream,
   endStream,
@@ -154,7 +155,13 @@ export interface BroadcastSessionActions {
   setMuted: (muted: boolean) => Promise<void>;
   resumeScreenShare: () => Promise<void>;
   setBlurSensitive: (blur: boolean) => void;
-  /** Reported by PrivyModalWatch; see the note there on why it lives outside. */
+  /**
+   * Legacy seam: a sensitive-wallet-dialog signal an external watcher can feed
+   * in. The Privy modal watcher that used to drive it is gone with the Decane
+   * migration; nothing feeds it today and the DOM/route guard below covers the
+   * sensitive-screen video pause. Kept so the wiring is ready if a Decane
+   * dialog watcher is added.
+   */
   setPrivyModalOpen: (open: boolean) => void;
   dismissError: () => void;
   /** Reset a terminal phase back to idle so the control offers a fresh start. */
@@ -219,9 +226,9 @@ export function BroadcastSessionProvider({ children }: { children: React.ReactNo
   const [connection, setConnection] = useState<"connected" | "reconnecting">("connected");
   const [reconnectingSince, setReconnectingSince] = useState<number | null>(null);
   const [domSuspend, setDomSuspend] = useState<SuspendReason | null>(null);
-  // Reported by PrivyModalWatch, which owns the dependency on Privy so the
-  // session does not. Null-safe by construction: a tree with no watcher simply
-  // leaves this false and falls back to the DOM check below.
+  // A sensitive-dialog signal an external watcher may feed in. Post-Decane no
+  // watcher is mounted, so this stays false and the session falls back to the
+  // DOM check below — which is the sole sensitive-screen guard now.
   const [privyModalOpen, setPrivyModalOpen] = useState(false);
   const [blurSensitive, setBlurSensitiveState] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -422,6 +429,13 @@ export function BroadcastSessionProvider({ children }: { children: React.ReactNo
         if (guest) await resolveSpeakerRequest(guest.streamId, guest.requestId, "leave");
       } else {
         setStream(await endStream(hosted.id));
+        track("stream_ended", {
+          stream_id: hosted.id,
+          // How long it was actually live, not how long the console was open.
+          ...(startedAt === null
+            ? {}
+            : { duration_seconds: Math.round((Date.now() - startedAt) / 1000) }),
+        });
       }
       finishLocally();
       setPhase("ended");
@@ -434,7 +448,7 @@ export function BroadcastSessionProvider({ children }: { children: React.ReactNo
     } finally {
       setBusy(false);
     }
-  }, [room, role, finishLocally]);
+  }, [room, role, finishLocally, startedAt]);
 
   // A reconnect that never lands has to end, and has to say so. Sixty seconds
   // is long enough for a tunnel and short enough that a stream does not sit
@@ -540,6 +554,7 @@ export function BroadcastSessionProvider({ children }: { children: React.ReactNo
         // to a screen share.
         await room.setCameraEnabled(true).catch(() => {});
         setStartedAt(Date.now());
+        track("stream_started", { stream_id: created.id });
         setPhase("live");
       } catch (caught) {
         room.stopTracks(capture);

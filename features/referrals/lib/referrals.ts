@@ -1,18 +1,23 @@
 "use client";
 
 // Transport and domain types for usernames and referrals, served by the Kash
-// engine through our same-origin proxy. A username doubles as the referral
-// code: the invite link is /r/<username>, and a referral counts once the
-// invited wallet makes its first deposit after claiming.
+// engine through our same-origin proxy. A referral counts once the invited
+// wallet makes its first deposit after claiming.
+//
+// A wallet has TWO codes that both resolve to it (kash ADR-0015): the opaque
+// one it is given on its first authenticated read of /referrals/me, and the
+// username it chose, if it ever chose one. Either may appear in an invite
+// link, so everything here that reads a code accepts both.
 
 import { createServiceClient } from "@/lib/api/service";
 import { truncateAddress } from "@/lib/format";
+import { USERNAME_PATTERN } from "@/lib/referral-code";
 
 const kash = createServiceClient("/api/kash", "Referrals are unavailable right now.");
 
-// Mirrors the engine's rule exactly: 3 to 20 characters, lowercase letters,
-// digits and underscores, starting with a letter.
-export const USERNAME_PATTERN = /^[a-z][a-z0-9_]{2,19}$/;
+// The code shapes live in lib/referral-code, because the casino and the
+// markets need them too and a feature may not import another feature.
+export { USERNAME_PATTERN, REF_CODE_PATTERN, isReferralCode } from "@/lib/referral-code";
 
 export type UsernameProblem = "too_short" | "too_long" | "invalid_characters" | null;
 
@@ -49,8 +54,9 @@ export function referralProgress(referred: number): { goal: number; pct: number 
   return { goal, pct };
 }
 
-export function inviteLink(origin: string, username: string): string {
-  return `${origin}/r/${username}`;
+/** `code` is a username or the wallet's given code; the route resolves both. */
+export function inviteLink(origin: string, code: string): string {
+  return `${origin}/r/${code}`;
 }
 
 // The link as the comp shows it: no protocol, just the part worth reading.
@@ -67,6 +73,12 @@ export interface UsernameAvailability {
 export interface ReferralStats {
   wallet: string;
   username: string | null;
+  /**
+   * The code this wallet was given, which is what a share link carries when
+   * its owner never claimed a username. Null only on an engine that predates
+   * ADR-0015, or before the first authenticated read has minted one.
+   */
+  refCode?: string | null;
   referred: number;
   pending: number;
   /**
@@ -127,8 +139,62 @@ export function getUsernameAvailability(username: string): Promise<UsernameAvail
   return kash.get(`/usernames/${encodeURIComponent(username)}/available`);
 }
 
-export function getMyReferralStats(): Promise<ReferralStats> {
-  return kash.authedGet("/referrals/me");
+/**
+ * A generation of the caller's network: how many people it holds and how many
+ * of those have counted (joined through a link AND deposited).
+ */
+export interface GenerationCount {
+  generation: number;
+  total: number;
+  counted: number;
+}
+
+/** The caller's own network, as `/referrals/me/network` answers it. */
+export interface ReferralNetwork {
+  wallet: string;
+  username: string | null;
+  joinedAt: string | null;
+  qualified: boolean;
+  downline: { total: number; counted: number };
+  generations: GenerationCount[];
+}
+
+/** One person in the caller's downline. */
+export interface NetworkPerson {
+  wallet: string;
+  username: string | null;
+  claimedAt: string | null;
+  qualified: boolean;
+}
+
+export interface NetworkPage {
+  people: NetworkPerson[];
+  nextCursor: string | null;
+}
+
+/** The empty network, for a wallet the engine has no node for. */
+export const EMPTY_NETWORK: ReferralNetwork = {
+  wallet: "",
+  username: null,
+  joinedAt: null,
+  qualified: false,
+  downline: { total: 0, counted: 0 },
+  generations: [],
+};
+
+export function getMyReferralNetwork(): Promise<ReferralNetwork> {
+  return kash.authedGet("/referrals/me/network");
+}
+
+export function getMyDownline(generation: number, cursor?: string | null): Promise<NetworkPage> {
+  const params = new URLSearchParams({ generation: String(generation) });
+  if (cursor) params.set("cursor", cursor);
+  return kash.authedGet(`/referrals/me/downline?${params.toString()}`);
+}
+
+/** The name a row shows: their handle, or their truncated wallet. */
+export function personHandle(person: NetworkPerson): string {
+  return person.username ? `@${person.username}` : truncateAddress(person.wallet);
 }
 
 export function putUsername(username: string): Promise<{ wallet: string; username: string }> {

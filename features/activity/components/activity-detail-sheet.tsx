@@ -262,7 +262,7 @@ export function ActivityDetailSheet({ item, onClose }: ActivityDetailSheetProps)
                     rel="noopener noreferrer"
                     onClick={() =>
                       track("arktivity_tx_opened", {
-                        chain: chain.network,
+                        network: chain.network,
                         // The view model carries a signed amount rather than a
                         // direction, and the sign is exactly what the adapter
                         // derived from it, so the event keeps its old meaning.

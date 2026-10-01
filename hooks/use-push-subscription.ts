@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { usePrivy } from "@privy-io/react-auth";
+import { useAuthSession } from "@/hooks/use-auth-session";
 import { useTranslations } from "next-intl";
 import { apiFetch } from "@/lib/api";
 import { errorCode, errorStatus, unwrap } from "@/lib/api/envelope";
@@ -170,8 +170,7 @@ async function deleteSubscription(userId: string, endpoint: string): Promise<voi
 
 export function usePushSubscription(): PushSubscriptionControls {
   const t = useTranslations("notifications");
-  const { user } = usePrivy();
-  const userId = user?.id ?? null;
+  const { userId } = useAuthSession();
   // Starts closed. The server cannot know what this browser supports, and a
   // soft ask that appears and then withdraws itself is worse than one that
   // arrives a frame late.

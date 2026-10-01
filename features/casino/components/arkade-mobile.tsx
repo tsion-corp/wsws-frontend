@@ -1,5 +1,6 @@
 "use client";
 
+import dynamic from "next/dynamic";
 import { useMemo, useState } from "react";
 import { useTranslations } from "next-intl";
 import { track } from "@/lib/analytics/mixpanel";
@@ -16,11 +17,19 @@ import {
   type ArkadeBadgeTone,
 } from "@/features/casino/components/arkade-game-card";
 import { ArkadeFeaturedBanner } from "@/features/casino/components/arkade-featured-banner";
+import { ARKADE_CAMPAIGN_BANNER_HIDDEN } from "@/features/casino/lib/arkade-campaign";
+const ArkadeCampaignBanner = dynamic(
+  () =>
+    import("@/features/casino/components/campaign/arkade-campaign-banner").then(
+      (module) => module.ArkadeCampaignBanner
+    ),
+  { ssr: false }
+);
 import { ArkadeSectionHeader } from "@/features/casino/components/arkade-section-header";
 import { FEATURED_STATS } from "@/features/casino/lib/featured";
 import { SearchIcon, WalletIcon } from "@/components/ui/icons";
-import { ShineToggle } from "@/components/shine/shine-toggle";
 import { usePortfolio } from "@/hooks/use-portfolio";
+import type { CasinoPresenceByGame } from "@/features/casino/lib/api/presence";
 
 /**
  * Arkade on a phone (Figma 2234:11169): the same surface the desktop draws,
@@ -85,11 +94,13 @@ function ArkadeRail({
   label,
   badge,
   firstBadge,
+  presenceByGame,
 }: {
   games: CasinoGame[];
   label: string;
   badge?: ArkadeBadgeTone;
   firstBadge?: ArkadeBadgeTone;
+  presenceByGame?: CasinoPresenceByGame;
 }) {
   return (
     <ul
@@ -102,6 +113,7 @@ function ArkadeRail({
             game={game}
             surface="desktop"
             render="link"
+            presence={presenceByGame?.[game.id as keyof CasinoPresenceByGame]}
             badge={index === 0 && firstBadge ? firstBadge : badge}
             onActivate={reportGameOpened}
           />
@@ -124,6 +136,7 @@ export interface ArkadeMobileProps {
   onSelectGame?: (game: CasinoGame) => void;
   // Which filter the surface opens on.
   defaultCategory?: GameCategoryFilter;
+  presenceByGame?: CasinoPresenceByGame;
 }
 
 export function ArkadeMobile({
@@ -132,6 +145,7 @@ export function ArkadeMobile({
   onAddFunds,
   onSelectGame,
   defaultCategory = "All games",
+  presenceByGame,
 }: ArkadeMobileProps = {}) {
   const t = useTranslations("casino.hub");
   const [category, setCategory] = useState<GameCategoryFilter>(defaultCategory);
@@ -188,7 +202,10 @@ export function ArkadeMobile({
 
       {/* Shine, above the fold for the same reason as on the desktop hub: it
           is on by default and posts without asking. */}
-      <ShineToggle service="arcade" />
+
+      {/* The weekly campaign, above the featured game. Resting layout only,
+          like the featured banner; nothing without a session or a campaign. */}
+      {!searching && !ARKADE_CAMPAIGN_BANNER_HIDDEN ? <ArkadeCampaignBanner /> : null}
 
       {/* Featured banner, resting layout only (2234:11192). */}
       {!searching && featured.length > 0 ? (
@@ -265,7 +282,7 @@ export function ArkadeMobile({
         </div>
       ) : searching ? (
         // Filtered lookup: one rail, no banner or section headings.
-        <ArkadeRail games={visible} label={t("title")} />
+        <ArkadeRail games={visible} label={t("title")} presenceByGame={presenceByGame} />
       ) : (
         <div className="flex flex-col gap-9">
           <section className="flex flex-col gap-6">
@@ -275,13 +292,19 @@ export function ArkadeMobile({
               label={t("trendingTitle")}
               badge="hot"
               firstBadge="mostPlayed"
+              presenceByGame={presenceByGame}
             />
           </section>
 
           {newGames.length > 0 ? (
             <section className="flex flex-col gap-6">
               <ArkadeSectionHeader title={t("newTitle")} subtitle={t("newSubtitle")} />
-              <ArkadeRail games={newGames} label={t("newTitle")} badge="new" />
+              <ArkadeRail
+                games={newGames}
+                label={t("newTitle")}
+                badge="new"
+                presenceByGame={presenceByGame}
+              />
             </section>
           ) : null}
         </div>

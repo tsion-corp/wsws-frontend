@@ -7,12 +7,15 @@ import { NextRequest } from "next/server";
 
 vi.mock("server-only", () => ({}));
 
-const { verifyRequest, getRequestUser, wsapiPerpRequest } = vi.hoisted(() => ({
+const { verifyRequest, getRequestUser, getRequestIdentity, wsapiPerpRequest } = vi.hoisted(() => ({
   verifyRequest: vi.fn(),
   getRequestUser: vi.fn(),
+  getRequestIdentity: vi.fn(),
   wsapiPerpRequest: vi.fn(),
 }));
-vi.mock("@/lib/server/auth", () => ({ verifyRequest, getRequestUser }));
+vi.mock("@/lib/server/auth", () => ({ verifyRequest, getRequestUser, getRequestIdentity }));
+const { linkedLegacyEvmAddress } = vi.hoisted(() => ({ linkedLegacyEvmAddress: vi.fn() }));
+vi.mock("@/lib/server/migration", () => ({ linkedLegacyEvmAddress }));
 vi.mock("@/lib/server/chess-identity", () => ({
   walletOfUser: (user: { wallet?: string } | null) => user?.wallet ?? null,
 }));
@@ -46,7 +49,11 @@ function upstreamAnswer(body: unknown, status = 200) {
 beforeEach(() => {
   verifyRequest.mockReset().mockResolvedValue({ userId: "did:x" });
   getRequestUser.mockReset().mockResolvedValue({ wallet: WALLET });
+  getRequestIdentity
+    .mockReset()
+    .mockResolvedValue({ userId: "did:x", evmAddress: WALLET, solanaAddress: null });
   wsapiPerpRequest.mockReset().mockResolvedValue(upstreamAnswer({ success: true, data: [] }));
+  linkedLegacyEvmAddress.mockReset().mockResolvedValue(null);
 });
 
 describe("the allowlist", () => {
@@ -114,6 +121,28 @@ describe("address-scoped reads", () => {
     const res = await GET(get(path), ctx(path));
     expect(res.status).toBe(404);
     expect(wsapiPerpRequest).not.toHaveBeenCalled();
+  });
+
+  // The upgrade reads the OLD wallet — the one the migration service says
+  // this session is linked to — to flatten it. Same person, by the link.
+  it("serves the linked old wallet's state, as the migration service reports the link", async () => {
+    linkedLegacyEvmAddress.mockResolvedValue(OTHER);
+    const path = `ark/wallet/${OTHER}`;
+    const res = await GET(get(path), ctx(path));
+    expect(res.status).toBe(200);
+    expect(wsapiPerpRequest).toHaveBeenCalledWith(path, expect.anything());
+  });
+
+  it("does not ask about a link for the session's own wallet, nor for a signed-out probe", async () => {
+    const own = `ark/account-state/${WALLET}`;
+    await GET(get(own), ctx(own));
+    expect(linkedLegacyEvmAddress).not.toHaveBeenCalled();
+
+    verifyRequest.mockResolvedValue(null);
+    const path = `ark/account-state/${OTHER}`;
+    const res = await GET(get(path), ctx(path));
+    expect(res.status).toBe(404);
+    expect(linkedLegacyEvmAddress).not.toHaveBeenCalled();
   });
 });
 

@@ -419,6 +419,25 @@ export function HelpIcon({ size = 20, className }: IconProps) {
   );
 }
 
+export function ShineIcon({ size = 20, className }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" className={className}>
+      <path
+        d="M12 3.5l1.9 4.6 4.6 1.9-4.6 1.9L12 16.5l-1.9-4.6L5.5 10l4.6-1.9L12 3.5z"
+        stroke={stroke}
+        strokeWidth="1.7"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M18.5 16.5l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7.7-1.8z"
+        stroke={stroke}
+        strokeWidth="1.4"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
 export function InfoIcon({ size = 16, className }: IconProps) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" className={className}>
@@ -737,3 +756,26 @@ export const INTEREST_ICONS: Record<string, (props: IconProps) => React.ReactNod
   house: HouseIcon,
   bond: BondIcon,
 };
+
+export function PasskeyIcon({ size = 20, className }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" className={className}>
+      <circle cx="9" cy="9" r="4.5" stroke={stroke} strokeWidth="1.7" />
+      <path
+        d="M12.2 12.2 19 19M16.5 15.5l-1.6 1.6M19 19l1.5-1.5"
+        stroke={stroke}
+        strokeWidth="1.7"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+export function UserIcon({ size = 20, className }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" className={className}>
+      <circle cx="12" cy="8.5" r="3.5" stroke={stroke} strokeWidth="1.8" />
+      <path d="M5 19.5a7 7 0 0 1 14 0" stroke={stroke} strokeWidth="1.8" strokeLinecap="round" />
+    </svg>
+  );
+}

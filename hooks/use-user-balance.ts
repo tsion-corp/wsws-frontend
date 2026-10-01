@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { usePrivy } from "@privy-io/react-auth";
+import { useAuthSession } from "@/hooks/use-auth-session";
 import { apiFetch } from "@/lib/api";
 import { unwrap } from "@/lib/api/envelope";
 import { BALANCE_ROUTES } from "@/lib/balance/routes";
@@ -72,11 +72,11 @@ export interface UserBalanceResult {
  * (ADR-2026-09-23-user-balance-endpoint). Nothing on screen has moved to it.
  */
 export function useUserBalance(): UserBalanceResult {
-  const { user } = usePrivy();
-  // Keyed on the Privy DID and not on a wallet address, because the DID is
-  // what the endpoint is scoped by: the path segment must equal the access
-  // token's `sub`, and the answer spans every wallet linked to it.
-  const userId = user?.id ?? null;
+  // Keyed on the account id and not on a wallet address, because the id is
+  // what the endpoint is scoped by: the path segment must equal what the
+  // gateway verifies from the access token, and the answer spans every
+  // wallet linked to it.
+  const { userId } = useAuthSession();
   const queryClient = useQueryClient();
   const queryKey = useMemo(() => userBalanceKey(userId), [userId]);
 

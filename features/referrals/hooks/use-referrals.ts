@@ -2,12 +2,13 @@
 
 import { useEffect, useRef } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { usePrivy } from "@privy-io/react-auth";
 import { useTranslations } from "next-intl";
-import { getWalletAddress } from "@/lib/user";
+import { useAuthSession } from "@/hooks/use-auth-session";
+import { fetchMyReferral, MY_REFERRAL_KEY } from "@/lib/referral-me";
 import { toast } from "@/lib/toast";
+import { track } from "@/lib/analytics/mixpanel";
 import {
-  getMyReferralStats,
+  type ReferralStats,
   getUsernameAvailability,
   postReferralClaim,
   putUsername,
@@ -21,12 +22,13 @@ import { clearRefCode, readRefCode } from "@/features/referrals/lib/ref-cookie";
 const STATS_POLL_MS = 30 * 1000;
 
 export function useReferralStats(enabled: boolean) {
-  const { user, ready, authenticated } = usePrivy();
-  const wallet = getWalletAddress(user, "ethereum");
+  const { ready, authenticated, evmAddress: wallet } = useAuthSession();
 
   return useQuery({
-    queryKey: ["referrals", "me", wallet],
-    queryFn: getMyReferralStats,
+    // The same key and fetcher useReferralCode uses, so the two are one
+    // request and one cache entry rather than a race over which fills it.
+    queryKey: MY_REFERRAL_KEY(wallet),
+    queryFn: () => fetchMyReferral<ReferralStats>(),
     enabled: enabled && ready && authenticated && Boolean(wallet),
     refetchInterval: STATS_POLL_MS,
   });
@@ -63,7 +65,7 @@ export function useSetUsername() {
 // that the code no longer exists. Transient failures keep the cookie so the
 // next visit retries.
 export function useClaimReferralFromLink() {
-  const { ready, authenticated } = usePrivy();
+  const { ready, authenticated } = useAuthSession();
   const queryClient = useQueryClient();
   const t = useTranslations("referral");
   const fired = useRef(false);
@@ -77,6 +79,10 @@ export function useClaimReferralFromLink() {
     postReferralClaim(code).then(
       () => {
         clearRefCode();
+        // The referral is only complete once the service has accepted the
+        // code, never on arriving with one in the URL. The profile's
+        // referral_count follows from this event.
+        track("referral_completed");
         toast.success(t("applied"));
         void queryClient.invalidateQueries({ queryKey: ["referrals"] });
       },

@@ -1,8 +1,8 @@
 "use client";
+import { useAuthSession } from "@/hooks/use-auth-session";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslations } from "next-intl";
-import { usePrivy } from "@privy-io/react-auth";
 import { friendlyError } from "@/lib/errors";
 import { useDepositStatus } from "@/hooks/use-deposit";
 import { scopeOf } from "@/lib/portfolio/fresh-scope";
@@ -20,10 +20,12 @@ import {
   type RwaQuoteRequest,
 } from "@/features/rwa/lib/api";
 import { rwaEntryPrice, rwaShineEvent, rwaTradeId } from "@/features/rwa/lib/shine";
-import { getWalletAddress } from "@/lib/user";
 import { reportShine } from "@/lib/shine";
 import { toast } from "@/lib/toast";
 import { track } from "@/lib/analytics/mixpanel";
+import { TRADE_FAILURE, reasonFor } from "@/lib/analytics/failure-reason";
+import { tradeAmounts, type TradeAmounts } from "@/lib/analytics/trade-amounts";
+import { chainIdOfNetwork } from "@/lib/meme/chain";
 import { depositProgress, quoteFee, settlementFor, type DepositProgress } from "@/lib/deposit";
 import {
   clearPendingRwaSettlement,
@@ -194,7 +196,8 @@ export function useRwaTicket({
   onContinueInBackground,
 }: UseRwaTicketOptions): UseRwaTicketResult {
   const t = useTranslations("rwa");
-  const { user } = usePrivy();
+  const { ready, authenticated, evmAddress, solanaAddress, profile } = useAuthSession();
+  const addressFor = (chain: string) => (chain === "solana" ? solanaAddress : evmAddress);
   const portfolio = usePortfolio();
   const { refetchFresh } = portfolio;
   // USD lives on Base; the asset settles on its own chain.
@@ -435,7 +438,7 @@ export function useRwaTicket({
   };
 
   useEffect(() => {
-    track("market_viewed", { vertical: "real_asset", asset: asset.symbol });
+    track("market_viewed", { vertical: "rwa", asset: asset.symbol });
   }, [asset.symbol]);
 
   // Refresh the portfolio as the Dextopus request advances. These reads use
@@ -500,6 +503,32 @@ export function useRwaTicket({
     }
   }, [amount, portfolio, refreshPortfolio, settlementRequest, settlementStage, t, tradedNetworks]);
 
+  // A trade's dollar value and token quantity from its request and quote. The
+  // pay and proceeds leg is always the chain's USDC (see payInput). Null when
+  // the leg the dollar figure comes from is missing, so nothing is reported
+  // rather than a figure nobody knows.
+  function rwaTradeAmounts(amountIn: string, q: RwaQuote | null | undefined): TradeAmounts | null {
+    const usdcDecimals = USDC_BY_CHAIN[asset.chain].decimals;
+    const output = q?.output.amount;
+    if (isBuy) {
+      return tradeAmounts({
+        usdRaw: BigInt(amountIn),
+        usdDecimals: usdcDecimals,
+        tokenRaw: output && /^\d+$/.test(output) && holding ? BigInt(output) : null,
+        tokenDecimals: holding?.decimals ?? null,
+        source: "quote",
+      });
+    }
+    if (!output || !/^\d+$/.test(output) || !holding) return null;
+    return tradeAmounts({
+      usdRaw: BigInt(output),
+      usdDecimals: usdcDecimals,
+      tokenRaw: BigInt(amountIn),
+      tokenDecimals: holding.decimals,
+      source: "quote",
+    });
+  }
+
   // The trade itself. The build re-prices server-side, while the staleness
   // gate ensures the user never executes against an old displayed quote.
   async function executeTrade() {
@@ -507,12 +536,18 @@ export function useRwaTicket({
     if (!req) return;
 
     // The attempt. `trade_completed` below only counts the ones that execute.
-    track("trade_previewed", {
-      vertical: "real_asset",
-      asset: asset.symbol,
-      side: isBuy ? "buy" : "sell",
-      amount_usd: Number(amount),
-    });
+    // Priced from the quote's legs: the field holds tokens on a sell, so it is
+    // never the dollar figure itself.
+    const quoted = rwaTradeAmounts(req.amountIn, quote);
+    if (quoted) {
+      track("trade_previewed", {
+        vertical: "rwa",
+        asset: asset.symbol,
+        side: isBuy ? "buy" : "sell",
+        amount_usd: quoted.amount_usd,
+        token_quantity: quoted.token_quantity,
+      });
+    }
 
     // Sponsored chains never gate on native gas; the check only applies where
     // the wallet really pays its own fee.
@@ -529,7 +564,7 @@ export function useRwaTicket({
       return;
     }
 
-    const taker = getWalletAddress(user, asset.chain === "solana" ? "solana" : "ethereum");
+    const taker = addressFor(asset.chain === "solana" ? "solana" : "ethereum");
     if (!taker) {
       setNotice({ kind: "error", message: t("connectWallet") });
       return;
@@ -587,6 +622,18 @@ export function useRwaTicket({
           },
         });
       }
+      // The built action is the order: its id is what support and the venue
+      // know it by, and nothing is signed before this point.
+      if (quoted) {
+        track("trade_submitted", {
+          vertical: "rwa",
+          asset: asset.symbol,
+          side: isBuy ? "buy" : "sell",
+          amount_usd: quoted.amount_usd,
+          token_quantity: quoted.token_quantity,
+          order_id: action.actionId,
+        });
+      }
       await execute(action, asset.chain, (index, step) => {
         setSignStep({ index, total: action.steps.length, label: step.description });
       });
@@ -602,13 +649,26 @@ export function useRwaTicket({
         stepCount: action.steps.length,
       });
       if (shineEvent) reportShine(shineEvent);
-      track("trade_completed", {
-        vertical: "real_asset",
-        asset: asset.symbol,
-        side: isBuy ? "buy" : "sell",
-        amount_usd: Number(amount),
-        issuer: asset.issuer,
-      });
+      // The build re-prices server-side, so its quote is the latest word on
+      // what the trade moves. A buy's input is exact USDC, so once executed its
+      // dollar figure is what was spent; a sale's proceeds are still expected.
+      const executed = rwaTradeAmounts(req.amountIn, action.quote ?? quote);
+      if (executed) {
+        track("trade_completed", {
+          vertical: "rwa",
+          asset: asset.symbol,
+          side: isBuy ? "buy" : "sell",
+          ...executed,
+          amount_source: isBuy ? "fill" : "quote",
+          order_id: action.actionId,
+          issuer: asset.issuer,
+          token_address: asset.address,
+          chain_id:
+            asset.chain === "solana"
+              ? undefined
+              : (chainIdOfNetwork(chainNetwork(asset.chain)) ?? undefined),
+        });
+      }
       toast.success(
         isBuy
           ? t("boughtSymbol", { symbol: asset.symbol })
@@ -634,9 +694,11 @@ export function useRwaTicket({
       // The provider's own code, which is already a coded string. The raw
       // message is never sent: it can quote back what the user typed.
       track("trade_failed", {
-        vertical: "real_asset",
+        vertical: "rwa",
         asset: asset.symbol,
-        reason: errorCode(e) ?? "trade_failed",
+        side: isBuy ? "buy" : "sell",
+        ...reasonFor(TRADE_FAILURE, e),
+        amount_usd: quoted?.amount_usd,
       });
       setSignStep(null);
       setNotice({ kind: "error", message: info.message });
@@ -657,8 +719,8 @@ export function useRwaTicket({
         return;
       }
 
-      const baseWallet = getWalletAddress(user, "ethereum");
-      const solanaWallet = getWalletAddress(user, "solana");
+      const baseWallet = evmAddress;
+      const solanaWallet = solanaAddress;
       if (!baseWallet || !solanaWallet) {
         setNotice({ kind: "error", message: t("connectWallet") });
         return;

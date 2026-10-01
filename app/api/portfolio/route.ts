@@ -22,10 +22,13 @@ export async function GET(req: NextRequest) {
   const evm = req.nextUrl.searchParams.get("evm") ?? undefined;
   const solana = req.nextUrl.searchParams.get("solana") ?? undefined;
   const requestedScope = req.nextUrl.searchParams.get("scope");
-  if (requestedScope && requestedScope !== "base") {
+  if (requestedScope && requestedScope !== "base" && requestedScope !== "legacy") {
     return NextResponse.json({ error: "Invalid portfolio scope" }, { status: 400 });
   }
   const baseOnly = requestedScope === "base";
+  // The migration's read of the OLD wallet: the whole wallet, not just the
+  // allowlist's contracts — see PortfolioScope.
+  const legacy = requestedScope === "legacy";
   // A caller that just traded needs to observe its own effect on the
   // networks it named; the short shared cache would otherwise hand back the
   // pre-trade snapshot. `fresh=1` still means every network.
@@ -37,7 +40,9 @@ export async function GET(req: NextRequest) {
   try {
     const portfolio = baseOnly
       ? await fetchPortfolio(evm, undefined, fresh, "base")
-      : await fetchPortfolio(evm, solana, fresh);
+      : legacy
+        ? await fetchPortfolio(evm, solana, fresh, "legacy")
+        : await fetchPortfolio(evm, solana, fresh);
     return NextResponse.json(portfolio, {
       headers: {
         // `private`, never `s-maxage`: this is one wallet's data, and a

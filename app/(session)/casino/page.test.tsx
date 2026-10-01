@@ -5,6 +5,12 @@ import { NextIntlClientProvider } from "next-intl";
 import enMessages from "@/messages/en.json";
 
 const push = vi.fn();
+// The campaign banner reads the session and the campaign query; this test is
+// about which catalogue the route mounts, so it is a marker.
+vi.mock("@/features/casino/components/campaign/arkade-campaign-banner", () => ({
+  ArkadeCampaignBanner: () => null,
+}));
+
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ push }),
   usePathname: () => "/casino",
@@ -19,6 +25,17 @@ vi.mock("@/features/casino/components/casino-page", () => ({
 // QueryClient for the route.
 vi.mock("@/hooks/use-portfolio", () => ({
   usePortfolio: () => ({ tokens: [], loading: false, totalUsd: 0 }),
+}));
+
+vi.mock("@/features/casino/hooks/use-casino-presence", () => ({
+  useCasinoPresence: () => ({
+    data: {
+      chess: { game: "chess", playersOnline: 1086, estimated: true },
+      arkball: { game: "arkball", playersOnline: 1024, estimated: true },
+      arkjet: { game: "arkjet", playersOnline: 893, estimated: true },
+      chicken: { game: "chicken", playersOnline: 1362, estimated: true },
+    },
+  }),
 }));
 
 // The arcade hub carries the Shine switch, which reads the account's own

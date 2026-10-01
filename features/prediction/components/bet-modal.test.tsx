@@ -89,10 +89,15 @@ describe("what a filled prediction order reports to Shine", () => {
     const event = mocks.reportShine.mock.calls[0][0] as ShineEvent;
     expect(JSON.stringify(event)).not.toContain("0xcondition");
     expect(event).toMatchObject({ id: "0xorder", outcome: "No" });
-    // Analytics keeps its own identifier, and that is not this one.
+    // Analytics keeps its own identifier, and that is not this one: the
+    // selection names the market, and the placed bet reports the slip.
+    expect(mocks.track).toHaveBeenCalledWith(
+      "prediction_selection_added",
+      expect.objectContaining({ market_id: "0xcondition" })
+    );
     expect(mocks.track).toHaveBeenCalledWith(
       "prediction_bet_placed",
-      expect.objectContaining({ market_id: "0xcondition" })
+      expect.objectContaining({ leg_count: 1 })
     );
   });
 

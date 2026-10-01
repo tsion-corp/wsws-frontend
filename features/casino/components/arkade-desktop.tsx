@@ -1,5 +1,6 @@
 "use client";
 
+import dynamic from "next/dynamic";
 import { useMemo, useState } from "react";
 import { useTranslations } from "next-intl";
 import {
@@ -10,11 +11,19 @@ import {
 } from "@/features/casino/lib/games";
 import { ArkadeDesktopRow } from "@/features/casino/components/arkade-desktop-row";
 import { ArkadeFeaturedBanner } from "@/features/casino/components/arkade-featured-banner";
+import { ARKADE_CAMPAIGN_BANNER_HIDDEN } from "@/features/casino/lib/arkade-campaign";
+const ArkadeCampaignBanner = dynamic(
+  () =>
+    import("@/features/casino/components/campaign/arkade-campaign-banner").then(
+      (module) => module.ArkadeCampaignBanner
+    ),
+  { ssr: false }
+);
 import { ArkadeSectionHeader } from "@/features/casino/components/arkade-section-header";
 import { FEATURED_STATS } from "@/features/casino/lib/featured";
 import { SearchIcon, WalletIcon } from "@/components/ui/icons";
-import { ShineToggle } from "@/components/shine/shine-toggle";
 import { usePortfolio } from "@/hooks/use-portfolio";
+import type { CasinoPresenceByGame } from "@/features/casino/lib/api/presence";
 
 /**
  * Arkade on the desktop (Figma 2234:11125 for the head and tab bar, over the
@@ -75,6 +84,7 @@ export interface ArkadeDesktopProps {
   // Opens the deposit flow from the head's Add-funds action.
   onAddFunds?: () => void;
   defaultCategory?: GameCategoryFilter;
+  presenceByGame?: CasinoPresenceByGame;
 }
 
 export function ArkadeDesktop({
@@ -83,6 +93,7 @@ export function ArkadeDesktop({
   onSelectGame,
   onAddFunds,
   defaultCategory = "All games",
+  presenceByGame,
 }: ArkadeDesktopProps) {
   const t = useTranslations("casino.hub");
   const [category, setCategory] = useState<GameCategoryFilter>(defaultCategory);
@@ -174,7 +185,6 @@ export function ArkadeDesktop({
           it is on by default and posts publicly without asking each time. The
           place someone finds that out has to be the page they play on, not a
           settings sheet. One switch covers every game here. */}
-      <ShineToggle service="arcade" />
 
       {/* ── Tab bar + search (2234:11148) ── */}
       <div className="flex w-full items-center justify-between gap-6">
@@ -231,11 +241,17 @@ export function ArkadeDesktop({
               loading={loading}
               label={t("rowLabel", { index: index + 1 })}
               onSelectGame={onSelectGame}
+              presenceByGame={presenceByGame}
             />
           ))}
         </div>
       ) : (
         <>
+          {/* The weekly campaign, above the featured game: it is the one
+              thing on Arkade with a clock on it. Renders nothing without a
+              session or a campaign. */}
+          {ARKADE_CAMPAIGN_BANNER_HIDDEN ? null : <ArkadeCampaignBanner />}
+
           {/* Featured banner (2234:10801) */}
           {featured.length > 0 ? (
             <ArkadeFeaturedBanner games={featured} stats={FEATURED_STATS} onPlay={onSelectGame} />
@@ -251,6 +267,7 @@ export function ArkadeDesktop({
               badge="hot"
               firstBadge="mostPlayed"
               onSelectGame={onSelectGame}
+              presenceByGame={presenceByGame}
             />
           </section>
 
@@ -267,6 +284,7 @@ export function ArkadeDesktop({
                     label={t("newTitle")}
                     badge="new"
                     onSelectGame={onSelectGame}
+                    presenceByGame={presenceByGame}
                   />
                 ))}
               </div>

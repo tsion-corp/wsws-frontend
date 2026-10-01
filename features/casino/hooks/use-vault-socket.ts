@@ -9,7 +9,11 @@ import {
   noteSettlement,
   settlementFromFrame,
 } from "@/features/casino/lib/last-standing/settlements";
-import { sortGameRows } from "@/features/casino/lib/vault-game";
+import { keepKnownMetadata, sortGameRows } from "@/features/casino/lib/vault-game";
+import {
+  rememberMetadata,
+  withKnownMetadata,
+} from "@/features/casino/lib/last-standing/metadata-memory";
 import type { ChainGame } from "@/features/casino/lib/vault-game";
 import { vaultLog } from "@/features/casino/lib/last-standing/log";
 
@@ -162,6 +166,14 @@ function applySettled(client: QueryClient, frame: GameSettledFrame): void {
   );
   void client.invalidateQueries({ queryKey: VAULT_KEYS.winners });
   void client.invalidateQueries({ queryKey: VAULT_KEYS.activities });
+  // The other half of the same gap: the "won" row belongs in this game's own
+  // feed too, and that key is not under `activities`. Invalidated rather than
+  // patched — the frame carries the payout split, not a feed row, and the
+  // round is over, so the indexer catching up a moment later costs nothing
+  // that a mid-round flicker would have cost. Exactly this key, not the
+  // `game(id)` prefix above it: that would refetch the game itself and undo
+  // the settled state just patched in.
+  void client.invalidateQueries({ queryKey: VAULT_KEYS.gameActivities(frame.gameId) });
   noteSettlement(settlementFromFrame(frame));
 }
 
@@ -170,6 +182,33 @@ function applyActivity(client: QueryClient, entry: VaultActivity): void {
     prev.some((p) => p.transactionHash === entry.transactionHash)
       ? prev
       : [entry, ...prev].slice(0, MAX_ACTIVITIES)
+  );
+
+  // The same row into the game's OWN feed, which is what the game detail page
+  // reads — its activity table and its "Rounds #N" both come from here, and
+  // neither is derived from the capped strip above. Without this a live join
+  // moved the pot, the king and the clock (`applyWager` patches those) while
+  // the table and the round number stayed frozen for the whole round: nothing
+  // else touches this key while the socket is healthy.
+  //
+  // Patched rather than invalidated, for the reason `applyWager` patches: the
+  // indexer trails the chain by a few blocks, so refetching now can return a
+  // feed that does not have this row yet and would drop it back out. The
+  // socket frame carries the row the feed will index, keyed by the same
+  // transaction hash, so the refetch that eventually happens reconciles
+  // against it instead of fighting it.
+  //
+  // `prev` undefined means nobody has fetched this feed; returning it unchanged
+  // leaves the query uncreated. Seeding it with this one row would look like a
+  // complete history while missing the `started` row the round count is
+  // measured from, which reads as "no game here" rather than "not loaded yet".
+  //
+  // Not capped, unlike the strip above: this is one game's full history, and
+  // `MAX_ACTIVITIES` exists to bound a feed that spans every game.
+  client.setQueryData<VaultActivity[]>(VAULT_KEYS.gameActivities(entry.gameId), (prev) =>
+    prev === undefined || prev.some((p) => p.transactionHash === entry.transactionHash)
+      ? prev
+      : [entry, ...prev]
   );
 }
 
@@ -238,7 +277,14 @@ export function handleVaultFrame(client: QueryClient, raw: string): void {
         if (dropped > 0) {
           console.warn(`[vault] dropped ${dropped} activeGames row(s) in no known shape`);
         }
-        client.setQueryData<VaultGame[]>(VAULT_KEYS.games, api);
+        // The snapshot carries no metadata (the keeper builds it with
+        // toGameDto(game, usd), where the third argument is the name), so a
+        // name the client already has is carried across rather than replaced
+        // with nothing. Everything else in the row is still the snapshot's.
+        rememberMetadata(api);
+        client.setQueryData<VaultGame[]>(VAULT_KEYS.games, (previous) =>
+          keepKnownMetadata(previous ?? [], api).map(withKnownMetadata)
+        );
         client.setQueryData<ChainGame[]>(VAULT_KEYS.chainGames, chain);
       } else if (games !== undefined) {
         console.warn("[vault] ignored an activeGames frame whose games is not an array");

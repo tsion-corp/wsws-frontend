@@ -11,6 +11,7 @@ import { predictionPayout } from "@/lib/format";
 import { reportShine } from "@/lib/shine";
 import { toast } from "@/lib/toast";
 import { track } from "@/lib/analytics/mixpanel";
+import { PREDICTION_FAILURE, reasonFor } from "@/lib/analytics/failure-reason";
 import type { Prediction } from "@/lib/types";
 import { isValidPredictionStake, PREDICTION_MIN_STAKE_USD } from "@/features/prediction/lib/stake";
 
@@ -44,15 +45,7 @@ export function PredictionBetForm({
   const t = useTranslations("prediction");
   const money = useMoney();
   const { accepted, accept } = usePredictionConsent();
-  const {
-    placeBet,
-    phase,
-    error,
-    sessionStatus,
-    predictionBalanceUsd,
-    usdcTotal,
-    portfolioLoading,
-  } = useBet();
+  const { placeBet, phase, error, sessionStatus, usdcTotal, portfolioLoading } = useBet();
   const [amount, setAmount] = useState(String(PREDICTION_MIN_STAKE_USD));
 
   const amountUsd = Number(amount);
@@ -100,6 +93,35 @@ export function PredictionBetForm({
   const submit = async () => {
     if (!tokenId || !validAmount) return;
     const toastId = toast.loading(t("placingBet"));
+    // A direct Polymarket bet is a slip of one. Reported in the slip's shape
+    // so single bets and combos count in the same series; the market itself is
+    // named by the prediction_selection_added that precedes it.
+    // The label reads like "62¢"; a share paying $1 at that price is worth
+    // 100/cents, which is the decimal odds the catalog asks for.
+    const cents = Number(priceCents.replace(/[^0-9.]/gu, ""));
+    const odds = cents > 0 ? Math.round((100 / cents) * 1e4) / 1e4 : undefined;
+    const legs = {
+      leg_count: 1,
+      stake_usd: amountUsd,
+      ...(odds !== undefined
+        ? {
+            combined_odds: odds,
+            potential_payout_usd: Math.round(amountUsd * odds * 100) / 100,
+          }
+        : {}),
+    };
+    track("prediction_selection_added", {
+      // This modal trades the curated Polymarket set; the user-created markets
+      // have their own flow.
+      market_id: prediction?.conditionId ?? tokenId,
+      outcome: side,
+      ...(odds !== undefined ? { odds } : {}),
+      slip_size: 1,
+    });
+    track("prediction_slip_submitted", {
+      ...legs,
+      market_ids: prediction?.conditionId ?? tokenId,
+    });
     try {
       const fill = await placeBet({ tokenId, amountUsd });
       // A fill-and-kill order that came back ok matched rather than rested, so
@@ -119,17 +141,7 @@ export function PredictionBetForm({
         takingAmount: fill.takingAmount,
       });
       if (shineEvent) reportShine(shineEvent);
-      track("prediction_bet_placed", {
-        // This modal trades the curated Polymarket set; the user-created
-        // markets have their own flow and report scope "local".
-        market_id: prediction?.conditionId ?? tokenId,
-        category: prediction?.tag,
-        scope: "global",
-        side,
-        amount_usd: amountUsd,
-        // The label reads like "62¢"; the catalog wants the number.
-        price_cents: Number(priceCents.replace(/[^0-9.]/gu, "")),
-      });
+      track("prediction_bet_placed", legs);
       toast.success(
         side === "yes"
           ? t("betPlacedYes", { amount: money.formatExact(amountUsd) })
@@ -138,7 +150,8 @@ export function PredictionBetForm({
       );
       onPlaced?.();
       onClose();
-    } catch {
+    } catch (error) {
+      track("prediction_bet_failed", { ...legs, ...reasonFor(PREDICTION_FAILURE, error) });
       // Error is surfaced inline below; keep the modal open to retry.
       toast.error(t("betFailed"), { id: toastId });
     }
@@ -213,9 +226,7 @@ export function PredictionBetForm({
                 <div className="rounded-xl border border-white/8 bg-white/3 px-3 py-2.5">
                   <div className="text-white/40">Available for tickets</div>
                   <div className="tnum mt-0.5 font-semibold text-white/80">
-                    {predictionBalanceUsd === null
-                      ? "Checked on placement"
-                      : `${predictionBalanceUsd.toFixed(2)} pUSD`}
+                    {portfolioLoading ? "Checked on placement" : `${usdcTotal.toFixed(2)} pUSD`}
                   </div>
                 </div>
                 <div className="rounded-xl border border-white/8 bg-white/3 px-3 py-2.5">

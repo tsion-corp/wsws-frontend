@@ -132,8 +132,12 @@ function sponsorPairsFor(
 // not own the policy. Anything else is the request's own outcome.
 // A bundler-sponsorship policy answers the paymaster path "Unsupported Policy
 // Type"; that pair can never serve this path, the same as a missing policy.
+// "<NETWORK> is not enabled for this app" is the same shape one level up: the
+// Alchemy app behind this key has never had the network switched on (seen
+// live for HyperEVM, Monad and ApeChain on one of five apps), so its policy
+// cannot sponsor there whatever it says — and another pair's can.
 const PAIR_REJECTED =
-  /policy not found|policy id\(s\) not found|unsupported policy type|does not support bundler sponsorship|must be authenticated|not authorized|unauthorized|invalid api key/i;
+  /policy not found|policy id\(s\) not found|unsupported policy type|does not support bundler sponsorship|is not enabled for this app|must be authenticated|not authorized|unauthorized|invalid api key/i;
 
 function pairCannotServe(status: number, text: string): "capacity" | "rejected" | null {
   // BSO returns the spending-limit failure inside a 200, while the paymaster
@@ -172,7 +176,14 @@ function withPaymasterPolicy(call: RpcCall, policyId: string): RpcCall {
 }
 
 export async function forwardAlchemyBundlerRequest(req: NextRequest, network: string) {
-  const claims = await verifyRequest(req);
+  // Consume the request stream while the access token is being verified. A
+  // cold verification can outlive the browser transport timeout; reading the
+  // body afterwards then produces null and makes a valid user operation look
+  // malformed.
+  const [claims, body] = await Promise.all([
+    verifyRequest(req),
+    req.json().catch(() => null) as Promise<unknown>,
+  ]);
   if (!claims) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
@@ -188,7 +199,6 @@ export async function forwardAlchemyBundlerRequest(req: NextRequest, network: st
     return NextResponse.json({ error: "Alchemy API key is missing" }, { status: 503 });
   }
 
-  const body = await req.json().catch(() => null);
   const calls = (Array.isArray(body) ? body : [body]) as Array<RpcCall | null>;
   if (
     calls.length === 0 ||

@@ -73,6 +73,7 @@ import { copyText } from "@/lib/clipboard";
 import { friendlyError } from "@/lib/errors";
 import { toast } from "@/lib/toast";
 import { shareOrigin } from "@/lib/site-url";
+import { useShareLink } from "@/hooks/use-share-link";
 
 const OTHER: Record<DraughtsSide, DraughtsSide> = { white: "black", black: "white" };
 const EMPTY_PATH: number[] = [];
@@ -298,6 +299,7 @@ function TabButton({
 
 export function CheckersPlay({ matchId }: { matchId: string }) {
   const router = useRouter();
+  const shareLink = useShareLink();
   const { address } = useCasinoWallet();
   const wallet = address ?? null;
   const { match, loading, error, now, live, refresh, apply } = useDraughtsMatch(matchId);
@@ -355,13 +357,16 @@ export function CheckersPlay({ matchId }: { matchId: string }) {
             : match.result.reason === "abandoned"
               ? ("abandoned" as const)
               : ("no_moves" as const);
+    const payout = match.computer?.wager
+      ? computerGamePayout(match.computer.wager, outcome)
+      : gamePayout(match.wager?.stakeUsdc, outcome, match.wager?.feeBps ?? 500);
     track("game_result", {
       game: "checkers",
       result: outcome,
       reason,
-      ...(match.computer?.wager
-        ? computerGamePayout(match.computer.wager, outcome)
-        : gamePayout(match.wager?.stakeUsdc, outcome, match.wager?.feeBps ?? 500)),
+      ...payout,
+      amount_usd: payout.payout_usd,
+      game_id: match.id,
     });
   }, [seat, match?.id, match?.state, match?.result, match?.wager, match?.computer?.wager]);
 
@@ -678,7 +683,9 @@ export function CheckersPlay({ matchId }: { matchId: string }) {
               <button
                 type="button"
                 onClick={async () => {
-                  await copyText(`${shareOrigin()}/casino/checkers/play?match=${match.id}`);
+                  await copyText(
+                    shareLink(`${shareOrigin()}/casino/checkers/play?match=${match.id}`)
+                  );
                   toast.success("Invite link copied.");
                 }}
                 className={DRAUGHTS_PANEL_BUTTON_CLASS}

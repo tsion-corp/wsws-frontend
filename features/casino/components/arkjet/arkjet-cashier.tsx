@@ -3,14 +3,17 @@
 import { useEffect, useState } from "react";
 import { useTranslations } from "next-intl";
 import type { ArkjetBalance } from "@/features/casino/lib/api/arkjet";
-import { useArkjetFunding } from "@/features/casino/hooks/use-arkjet-funding";
+import {
+  useArkjetFunding,
+  type ArkjetFundingScope,
+} from "@/features/casino/hooks/use-arkjet-funding";
+import { gameActionError } from "@/features/casino/lib/game-error";
 import {
   amountUnits,
   normalizeArkjetAmount,
   withdrawalUsdcEstimate,
 } from "@/features/casino/lib/arkjet-funding";
 import { usePortfolio } from "@/hooks/use-portfolio";
-import { friendlyError } from "@/lib/errors";
 import { toast } from "@/lib/toast";
 import { fromBaseUnits, toBaseUnits } from "@/lib/trade/math";
 import styles from "./arkjet.module.css";
@@ -20,9 +23,12 @@ type CashierMode = "deposit" | "withdraw";
 interface ArkjetCashierProps {
   balance: ArkjetBalance | null;
   minimumAmount: string;
+  initialAmount?: string;
   onClose: () => void;
+  onOpenFunds?: () => void;
   productName?: string;
   tone?: "arkjet" | "chicken";
+  fundingScope?: ArkjetFundingScope;
 }
 
 const DECIMAL = /^\d*\.?\d*$/;
@@ -38,15 +44,18 @@ function money(value: string, currency: string): string {
 export function ArkjetCashier({
   balance,
   minimumAmount,
+  initialAmount,
   onClose,
+  onOpenFunds,
   productName = "Arkjet",
   tone = "arkjet",
+  fundingScope = "shared",
 }: ArkjetCashierProps) {
   const t = useTranslations("arkjetFunding");
-  const funding = useArkjetFunding();
+  const funding = useArkjetFunding(fundingScope);
   const portfolio = usePortfolio({ scope: "base" });
   const [mode, setMode] = useState<CashierMode>("deposit");
-  const [amount, setAmount] = useState("");
+  const [amount, setAmount] = useState(initialAmount ?? "");
   const [awaitingCredit, setAwaitingCredit] = useState(false);
   const [recoveryInput, setRecoveryInput] = useState<string | null>(null);
 
@@ -112,7 +121,7 @@ export function ArkjetCashier({
 
   const deposit = async () => {
     if (!normalized || !config) return;
-    const toastId = toast.loading("Sending Base USDC from your Privy wallet…");
+    const toastId = toast.loading("Sending USDC from your balance...");
     setAwaitingCredit(false);
     try {
       const result = await funding.deposit(depositUsdc);
@@ -127,9 +136,12 @@ export function ArkjetCashier({
         setAwaitingCredit(true);
       }
     } catch (error) {
-      toast.error(friendlyError(error, `The ${productName} deposit could not be completed.`), {
-        id: toastId,
-      });
+      toast.error(
+        gameActionError(error, productName, `The ${productName} deposit could not be completed.`),
+        {
+          id: toastId,
+        }
+      );
     }
   };
 
@@ -147,9 +159,16 @@ export function ArkjetCashier({
       setAmount("");
       void portfolio.refetchFresh(SCOPE);
     } catch (error) {
-      toast.error(friendlyError(error, `The ${productName} withdrawal could not be completed.`), {
-        id: toastId,
-      });
+      toast.error(
+        gameActionError(
+          error,
+          productName,
+          `The ${productName} withdrawal could not be completed.`
+        ),
+        {
+          id: toastId,
+        }
+      );
     }
   };
 
@@ -318,6 +337,15 @@ export function ArkjetCashier({
                   ? "Transfer USDC and add funds"
                   : "Withdraw to Privy wallet"}
             </button>
+
+            {mode === "deposit" && onOpenFunds ? (
+              <div className={styles.cashierExternalFunding}>
+                <span>or</span>
+                <button type="button" onClick={onOpenFunds}>
+                  Fund with crypto or Naira
+                </button>
+              </div>
+            ) : null}
 
             {mode === "deposit" ? (
               <details

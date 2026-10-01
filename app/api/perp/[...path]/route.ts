@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { getRequestUser, verifyRequest } from "@/lib/server/auth";
-import { walletOfUser } from "@/lib/server/chess-identity";
+import { getRequestIdentity, verifyRequest } from "@/lib/server/auth";
 import { isAllowedPerpPath, perpRevalidate, wsapiPerpRequest } from "@/lib/server/wsapi";
+import { linkedLegacyEvmAddress } from "@/lib/server/migration";
 
 // Server-side proxy for the perp gateway (Hyperliquid perpetuals, the Ark
 // service). Reads are public market data; the prepare/submit pairs are POSTs
@@ -36,7 +36,10 @@ async function proxy(req: NextRequest, path: string[], method: "GET" | "POST", b
     // them on a valid session above.
     if (body != null && typeof body === "object" && "trader" in body) {
       const claimed = (body as { trader?: unknown }).trader;
-      const wallet = walletOfUser(await getRequestUser(req, claims));
+      // Provider-agnostic: resolves through Decane for a Decane session and
+      // through Privy for a Privy one. The old Privy-only lookup returned null
+      // for a Decane caller and rejected their own wallet as somebody else's.
+      const wallet = (await getRequestIdentity(req, claims))?.evmAddress ?? null;
       if (
         typeof claimed !== "string" ||
         !wallet ||
@@ -64,8 +67,18 @@ async function proxy(req: NextRequest, path: string[], method: "GET" | "POST", b
       : null;
   if (addressMatch) {
     const claims = await verifyRequest(req);
-    const wallet = claims ? walletOfUser(await getRequestUser(req, claims)) : null;
-    if (!wallet || addressMatch[1]!.toLowerCase() !== wallet.toLowerCase()) {
+    const wallet = claims ? ((await getRequestIdentity(req, claims))?.evmAddress ?? null) : null;
+    const asked = addressMatch[1]!.toLowerCase();
+    const own = wallet !== null && asked === wallet.toLowerCase();
+    // The old wallet this session is linked to is the same person's: the
+    // upgrade reads its positions and margin before flattening it. Asked of
+    // the migration service only when the address is not the session's own,
+    // and only for a signed-in session.
+    const linked =
+      !own && wallet !== null
+        ? (await linkedLegacyEvmAddress(req))?.toLowerCase() === asked
+        : false;
+    if (!own && !linked) {
       return NextResponse.json(
         { success: false, error: { code: "NOT_FOUND", message: "Not found" } },
         { status: 404 }
@@ -94,11 +107,11 @@ async function proxy(req: NextRequest, path: string[], method: "GET" | "POST", b
     const data = await res.json().catch(() => ({}));
     return NextResponse.json(data, { status: res.status });
   } catch (error) {
-    console.error("Perp proxy failed:", error);
+    console.error("Leverage Trading proxy failed:", error);
     return NextResponse.json(
       {
         success: false,
-        error: { code: "SERVICE_UNAVAILABLE", message: "Perp service unreachable" },
+        error: { code: "SERVICE_UNAVAILABLE", message: "Leverage Trading service unreachable" },
       },
       { status: 502 }
     );
