@@ -7,6 +7,12 @@ scenario-impact: prediction markets
 
 # Fight-market artwork and uncapped tickets
 
+ARK Markets now opens with the supplied Matchday fight banner. Events with a
+server-managed `trendingRank` also appear at the top of Trending, where only
+their configured primary market is previewed. Selecting those odds opens the
+same local Base USDC ticket used by the full ARK board, while “View all” keeps
+the complete child-market list one click away.
+
 The local prediction board now displays every active child market as an
 independent betting row instead of hiding markets behind a selector. Each row
 and selected ticket displays the market artwork, falling back to the event

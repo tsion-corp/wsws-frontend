@@ -30,7 +30,7 @@ import {
 } from "@/features/prediction/components/prediction-bet-sidebar";
 import { SportIcon } from "@/features/prediction/sportsbook/components/sport-icon";
 
-interface Pick {
+export interface BookPick {
   event: BookBoardEvent;
   market: BookBoardMarket;
   outcome: BookOutcome;
@@ -72,7 +72,7 @@ function OutcomeButton({
   outcome: BookOutcome;
   tone: "green" | "red";
   selected: boolean;
-  onPick: (pick: Pick) => void;
+  onPick: (pick: BookPick) => void;
 }) {
   const toneClass =
     tone === "green"
@@ -144,8 +144,8 @@ function EventRow({
 }: {
   event: BookBoardEvent;
   market: BookBoardMarket;
-  pick: Pick | null;
-  onPick: (pick: Pick) => void;
+  pick: BookPick | null;
+  onPick: (pick: BookPick) => void;
 }) {
   const time = eventTime(event.startsAt);
   const outcomes = market.outcomes.filter((outcome) => !outcome.hidden).slice(0, 4);
@@ -214,7 +214,7 @@ function BetSlip({
   onAccepted,
   onBusyChange,
 }: {
-  pick: Pick;
+  pick: BookPick;
   onClear: () => void;
   onAccepted: () => void;
   onBusyChange: (busy: boolean) => void;
@@ -505,12 +505,12 @@ function MyBookBets({ enabled }: { enabled: boolean }) {
   );
 }
 
-function BookBetPanel({
+export function BookBetPanel({
   pick,
   onClear,
   onClose,
 }: {
-  pick: Pick | null;
+  pick: BookPick | null;
   onClear: () => void;
   onClose?: () => void;
 }) {
@@ -553,7 +553,7 @@ export function BookSportsbookView() {
   const [country, setCountry] = useState("");
   const [league, setLeague] = useState("");
   const [offset, setOffset] = useState(0);
-  const [pick, setPick] = useState<Pick | null>(null);
+  const [pick, setPick] = useState<BookPick | null>(null);
   const [desktopSlipOpen, setDesktopSlipOpen] = useState(false);
   const [mobileSlipOpen, setMobileSlipOpen] = useState(false);
   const capabilities = useQuery({
@@ -599,7 +599,7 @@ export function BookSportsbookView() {
     setOffset(0);
   }
 
-  function selectPick(nextPick: Pick) {
+  function selectPick(nextPick: BookPick) {
     setPick(nextPick);
     if (window.matchMedia("(min-width: 1280px)").matches) setDesktopSlipOpen(true);
     else setMobileSlipOpen(true);
@@ -613,6 +613,21 @@ export function BookSportsbookView() {
     <main
       className={`relative min-h-screen bg-black text-white transition-[padding] duration-300 ease-in-out ${desktopSlipOpen ? "xl:pr-[326px]" : ""}`}
     >
+      <section
+        aria-label="Ark Matchday"
+        className="mx-auto w-full max-w-[1440px] border-x border-b border-white/[0.07] bg-[#080808] p-3 sm:p-4 lg:px-6"
+      >
+        <div className="relative h-36 overflow-hidden rounded-xl border border-white/10 bg-[#07100d] shadow-[0_18px_50px_rgba(0,0,0,.35)] sm:h-52 lg:h-64 xl:h-72">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src="/assets/images/matchday.png"
+            alt="Ark Matchday: Carter Efe versus Speed Darlington and Phyna versus Nkechi Blessing"
+            fetchPriority="high"
+            className="h-full w-full object-cover object-center"
+          />
+          <div className="pointer-events-none absolute inset-0 ring-1 ring-white/[0.06] ring-inset" />
+        </div>
+      </section>
       <nav
         aria-label="Local sports"
         className="flex h-12 [scrollbar-width:none] items-center gap-1 overflow-x-auto border-y border-white/[0.07] px-4 lg:px-6 [&::-webkit-scrollbar]:hidden"
