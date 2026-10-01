@@ -10,7 +10,10 @@ scenario-impact: prediction markets
 The local prediction board now displays every active child market as an
 independent betting row instead of hiding markets behind a selector. Each row
 and selected ticket displays the market artwork, falling back to the event
-image when a market does not provide its own image.
+image when a market does not provide its own image. The row tag identifies the
+specific market, and its first and second outcomes use green and red odds
+respectively. Selecting an odd opens a ticket scoped to that market and
+outcome.
 
 Dynamic parimutuel tickets no longer impose or advertise a product-level
 maximum stake. Users may enter any amount at or above the market minimum,

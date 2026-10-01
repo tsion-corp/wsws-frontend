@@ -63,26 +63,34 @@ function OutcomeButton({
   event,
   market,
   outcome,
+  tone,
   selected,
   onPick,
 }: {
   event: BookBoardEvent;
   market: BookBoardMarket;
   outcome: BookOutcome;
+  tone: "green" | "red";
   selected: boolean;
   onPick: (pick: Pick) => void;
 }) {
+  const toneClass =
+    tone === "green"
+      ? selected
+        ? "border-[#14be47] bg-[#123b20] text-[#65e58b] shadow-[inset_0_0_0_1px_rgba(20,190,71,.25)]"
+        : "border-[#17652f] bg-[#0c2514] text-[#47d674] hover:border-[#14be47] hover:bg-[#123b20]"
+      : selected
+        ? "border-[#ef4055] bg-[#42151b] text-[#ff8291] shadow-[inset_0_0_0_1px_rgba(239,64,85,.25)]"
+        : "border-[#7a2933] bg-[#2a1014] text-[#ff687a] hover:border-[#ef4055] hover:bg-[#42151b]";
+
   return (
     <button
       type="button"
       disabled={outcome.state !== "active" || market.state !== "active"}
       aria-pressed={selected}
+      aria-label={`${market.title}: ${outcome.title} at ${outcome.odds}`}
       onClick={() => onPick({ event, market, outcome })}
-      className={`flex h-12 w-full min-w-0 cursor-pointer items-center justify-center rounded-lg border px-3 text-center text-base font-bold tabular-nums transition-colors disabled:cursor-not-allowed disabled:opacity-35 ${
-        selected
-          ? "border-[#5ba8ff] bg-[#172235] text-[#8dc3ff]"
-          : "border-white/10 bg-white/[0.035] text-white hover:border-white/20 hover:bg-white/[0.07]"
-      }`}
+      className={`flex h-12 w-full min-w-0 cursor-pointer items-center justify-center rounded-lg border px-3 text-center text-base font-bold tabular-nums transition-colors disabled:cursor-not-allowed disabled:opacity-35 ${toneClass}`}
     >
       {outcome.odds}
     </button>
@@ -151,17 +159,19 @@ function EventRow({
             <span className="mr-1 font-semibold text-[#adadad]">{time.time}</span>
             <span className="mr-2">{time.day}</span>
             <SportIcon sport={event.sport.slug} name={event.sport.name} className="size-4" />
-            <span className="ml-1 truncate font-semibold text-[#adadad]">{event.league.name}</span>
+            <span className="ml-1 truncate rounded bg-white/[0.06] px-1.5 py-0.5 font-semibold text-[#d7d9de]">
+              {market.title}
+            </span>
           </div>
           <div className="mb-2 flex min-w-0 items-center gap-2">
             <MarketArtwork
-              title={market.title}
+              title={event.title}
               imageUrl={market.imageUrl}
               fallbackUrl={event.imageUrl}
               className="size-6"
             />
             <span className="truncate text-[11px] font-bold tracking-[0.01em] text-[#d7d9de]">
-              {market.title}
+              {event.title}
             </span>
           </div>
           <div className="flex min-w-0 flex-col gap-1.5">
@@ -177,7 +187,7 @@ function EventRow({
         </div>
 
         <div className={`grid min-w-0 gap-2 ${columns}`}>
-          {outcomes.map((outcome) => (
+          {outcomes.map((outcome, index) => (
             <div key={outcome.id} className="min-w-0">
               <p className="mb-1 h-4 truncate text-center text-xs font-semibold text-[#999]">
                 {outcome.title}
@@ -186,6 +196,7 @@ function EventRow({
                 event={event}
                 market={market}
                 outcome={outcome}
+                tone={index === 0 ? "green" : "red"}
                 selected={pick?.outcome.id === outcome.id}
                 onPick={onPick}
               />
