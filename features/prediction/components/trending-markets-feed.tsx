@@ -1,5 +1,6 @@
 "use client";
 
+import dynamic from "next/dynamic";
 import { useState } from "react";
 import type { PredictionMarketCategory } from "@/features/prediction/categories";
 import { usePolymarketAccess } from "@/features/prediction/hooks/use-polymarket-access";
@@ -8,14 +9,25 @@ import type { DiscoveryMarketEvent, DiscoveryMarketSort } from "@/features/predi
 import { useDiscoveryEvents } from "@/features/prediction/markets/hooks/use-discovery-markets";
 import { marketPrediction } from "../category-market-presenter";
 import { useHouseSlip } from "../house-slip-store";
-import { BookBetPanel, type BookPick } from "@/features/prediction/components/book-sportsbook-view";
+import type { BookPick } from "@/features/prediction/components/book-sportsbook-view";
 import { CategoryEventRow } from "./category-event-row";
 import { CategoryBetSidebar } from "./category-market-shared";
-import { FeaturedLocalMarkets } from "./featured-local-markets";
 import { HorizontalNavRail } from "./horizontal-nav-rail";
 import { PredictionBetSidebarFrame } from "./prediction-bet-sidebar";
 import { PredictionPositions, shouldShowPolymarketPositions } from "./prediction-positions";
 import { PredictionCategoryNav, type PredictionFeedFilter } from "./prediction-category-nav";
+
+const FeaturedLocalMarkets = dynamic(
+  () => import("./featured-local-markets").then((module) => module.FeaturedLocalMarkets),
+  { ssr: false }
+);
+const BookBetPanel = dynamic(
+  () =>
+    import("@/features/prediction/components/book-sportsbook-view").then(
+      (module) => module.BookBetPanel
+    ),
+  { ssr: false }
+);
 
 interface DiscoveryTopic {
   slug: string;
