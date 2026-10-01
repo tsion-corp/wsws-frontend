@@ -31,6 +31,15 @@ export function isConflictError(e: unknown): boolean {
   return gateway.status === 409 || gateway.code === "CONFLICT";
 }
 
+export class LegacySessionError extends Error {
+  readonly code = "LEGACY_SESSION";
+
+  constructor() {
+    super("Sign in to your old account to continue.");
+    this.name = "LegacySessionError";
+  }
+}
+
 /**
  * The trade service's failure codes (its frontend contract, "Important
  * errors", plus the relay's own codes and the swap lifecycle's terminal

@@ -116,15 +116,26 @@ export interface AnalyticsEvents {
 
   // Prediction
   prediction_market_viewed: { market_id: string; category?: string; scope: PredictionScope };
-  prediction_bet_placed: {
+  prediction_selection_added: {
     market_id: string;
-    category?: string;
-    scope: PredictionScope;
-    side: "yes" | "no";
-    amount_usd: number;
-    price_cents: number;
-    outcome_label?: string;
+    outcome: string;
+    odds?: number;
+    slip_size: number;
   };
+  prediction_selection_removed: { market_id: string; slip_size: number };
+  prediction_slip_submitted: PredictionSlip & { market_ids: string };
+  prediction_bet_placed:
+    | {
+        market_id: string;
+        category?: string;
+        scope: PredictionScope;
+        side: "yes" | "no";
+        amount_usd: number;
+        price_cents: number;
+        outcome_label?: string;
+      }
+    | PredictionSlip;
+  prediction_bet_failed: PredictionSlip & { reason: string; reason_detail?: string };
   prediction_market_created: {
     market_type: "single" | "multi";
     category?: string;
@@ -329,6 +340,14 @@ export type WithdrawCompleted =
 
 export type MarketType = "crypto" | "forex" | "commodity" | "equity";
 export type PredictionScope = "global" | "local";
+
+export interface PredictionSlip {
+  slip_id?: string;
+  leg_count: number;
+  stake_usd: number;
+  combined_odds?: number;
+  potential_payout_usd?: number;
+}
 export type EarnListingType = "bounty" | "project" | "grant";
 
 // Trading carries the fields its vertical actually has: a spot fill knows its

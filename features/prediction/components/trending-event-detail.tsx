@@ -16,7 +16,6 @@ import {
   CategoryMarketRow,
 } from "./category-market-shared";
 import { PredictionCategoryNav } from "./prediction-category-nav";
-import { ShareLinkButton } from "@/components/ui/share-link-button";
 
 function BackIcon() {
   return (
@@ -140,12 +139,9 @@ function DiscoveryEventContent({
           <h1 className="mt-1 max-w-4xl text-xl leading-7 font-semibold tracking-[-0.02em] text-white sm:text-2xl">
             {event.title}
           </h1>
-          <div className="mt-2 flex items-center gap-3">
-            <p className="text-xs text-[#777d87]">
-              {predictions.length} {predictions.length === 1 ? "market" : "markets"}
-            </p>
-            <ShareLinkButton title={event.title} />
-          </div>
+          <p className="mt-2 text-xs text-[#777d87]">
+            {predictions.length} {predictions.length === 1 ? "market" : "markets"}
+          </p>
         </div>
       </header>
 

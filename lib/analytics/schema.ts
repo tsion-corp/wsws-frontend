@@ -174,6 +174,25 @@ export const EVENT_SCHEMA: Record<AnalyticsEventName, EventSchema> = {
   prediction_market_viewed: [
     shape({ market_id: "string", "category?": "string", scope: "string" }),
   ],
+  prediction_selection_added: [
+    shape({
+      market_id: "string",
+      outcome: "string",
+      "odds?": "number",
+      slip_size: "number",
+    }),
+  ],
+  prediction_selection_removed: [shape({ market_id: "string", slip_size: "number" })],
+  prediction_slip_submitted: [
+    shape({
+      "slip_id?": "string",
+      leg_count: "number",
+      stake_usd: "number",
+      "combined_odds?": "number",
+      "potential_payout_usd?": "number",
+      market_ids: "string",
+    }),
+  ],
   prediction_bet_placed: [
     shape({
       market_id: "string",
@@ -183,6 +202,24 @@ export const EVENT_SCHEMA: Record<AnalyticsEventName, EventSchema> = {
       amount_usd: "number",
       price_cents: "number",
       "outcome_label?": "string",
+    }),
+    shape({
+      "slip_id?": "string",
+      leg_count: "number",
+      stake_usd: "number",
+      "combined_odds?": "number",
+      "potential_payout_usd?": "number",
+    }),
+  ],
+  prediction_bet_failed: [
+    shape({
+      "slip_id?": "string",
+      leg_count: "number",
+      stake_usd: "number",
+      "combined_odds?": "number",
+      "potential_payout_usd?": "number",
+      reason: "string",
+      "reason_detail?": "string",
     }),
   ],
   prediction_market_created: [
