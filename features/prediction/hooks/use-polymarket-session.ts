@@ -2,11 +2,10 @@
 
 import { useCallback, useState } from "react";
 import { friendlyError } from "@/lib/errors";
-import { useSocialWallet } from "decane-connect-kit";
+import { usePrivy, useWallets } from "@privy-io/react-auth";
 import { deployDepositWallet, isWalletDeployed } from "@polymarket/client/actions";
 import type { EIP1193Provider } from "viem";
-import { useAuthSession } from "@/hooks/use-auth-session";
-import { ensureUnlocked } from "@/lib/decane";
+import { getWalletAddress } from "@/lib/user";
 import { buildSecureClient, type SecureClient } from "@/lib/polymarket/secure-client";
 
 export type SessionStatus = "idle" | "connecting" | "deploying" | "approving" | "ready" | "error";
@@ -21,13 +20,13 @@ let building: Promise<SecureClient> | null = null;
 // user. First use derives + deploys the Deposit Wallet (gasless via the builder
 // relayer) and sets trading approvals, then caches the ready client process-wide.
 export function usePolymarketSession() {
-  const { evmAddress } = useAuthSession();
-  const wallet = useSocialWallet();
+  const { user } = usePrivy();
+  const { wallets } = useWallets();
   const [status, setStatus] = useState<SessionStatus>("idle");
   const [error, setError] = useState<string | null>(null);
 
   const ensureReady = useCallback(async (): Promise<SecureClient> => {
-    const address = evmAddress;
+    const address = getWalletAddress(user, "ethereum");
     if (!address) throw new Error("No wallet connected");
 
     // Reset if the signed-in wallet changed.
@@ -41,10 +40,11 @@ export function usePolymarketSession() {
     setError(null);
     building = (async () => {
       setStatus("connecting");
-      // Onboarding signs through the provider (deploy + approvals), so the
-      // Decane session must be unlocked before the client is built.
-      await ensureUnlocked(wallet);
-      const provider = wallet.getEthereumProvider() as unknown as EIP1193Provider;
+      const wallet = wallets.find(
+        (candidate) => candidate.address.toLowerCase() === address.toLowerCase()
+      );
+      if (!wallet) throw new Error("Wallet is not ready. Try again.");
+      const provider = (await wallet.getEthereumProvider()) as unknown as EIP1193Provider;
       const client = await buildSecureClient(address, provider);
 
       if (!(await isWalletDeployed(client))) {
@@ -71,7 +71,7 @@ export function usePolymarketSession() {
     } finally {
       building = null;
     }
-  }, [evmAddress, wallet]);
+  }, [user, wallets]);
 
   return { ensureReady, status, error, ready: status === "ready" };
 }
