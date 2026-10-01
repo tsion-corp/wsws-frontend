@@ -164,6 +164,27 @@ const trading = {
   },
 };
 
+vi.mock("@/hooks/use-auth-session", () => ({
+  useAuthSession: () => ({
+    ready: true,
+    authenticated: true,
+    userId: "trader-1",
+    evmAddress: "0x0000000000000000000000000000000000000001",
+    solanaAddress: null,
+    profile: { name: "Trader", email: "", avatarSeed: "trader" },
+    logout: vi.fn(),
+  }),
+}));
+vi.mock("decane-connect-kit", () => ({
+  useSocialWallet: () => ({
+    getEthereumProvider: vi.fn(),
+    signMessage: vi.fn(),
+    signTypedData: vi.fn(),
+    getAccessToken: vi.fn(),
+    isUnlocked: true,
+  }),
+  useSocialAuth: () => ({ canUsePasskey: false }),
+}));
 vi.mock("@/features/trade/hooks/use-hyperliquid-trading", () => ({
   useHyperliquidTrading: () => trading,
 }));

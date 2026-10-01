@@ -721,9 +721,19 @@ export interface MarketSquareMe {
   role: MarketSquareRole;
 }
 
-/** The reader's own square identity, for the compose sheet's header. */
+/**
+ * The reader's own square identity: the compose sheet's header, and the face
+ * the account chrome draws.
+ *
+ * `authedGet`, never `get`. The plain read is deliberately anonymous — it
+ * sends no credentials so public answers stay cacheable — and `/me` is the one
+ * path where that cannot work: the square reads the caller off the bearer
+ * token, and our own proxy refuses the path before forwarding a byte without a
+ * verified session. Asked anonymously it is not a thinner answer, it is a
+ * guaranteed 401.
+ */
 export async function fetchSquareMe(): Promise<MarketSquareMe> {
-  return marketSquare.get<MarketSquareMe>("/me");
+  return marketSquare.authedGet<MarketSquareMe>("/me");
 }
 
 /**
@@ -881,6 +891,65 @@ export function fetchLiveStreams(limit = 8): Promise<MarketSquareRoom[]> {
 /** The rooms that have not opened yet, for "Coming soon". */
 export function fetchScheduledStreams(limit = 8): Promise<MarketSquareRoom[]> {
   return fetchRooms("scheduled", limit);
+}
+
+/**
+ * One live room, read on its own.
+ *
+ * Two things live only here, and both are why the rooms card asks for it after
+ * the list has named the room:
+ *
+ * - `category`, which decides WHICH screen the room is watched on: an audio
+ *   gist room and a broadcast are both streams and have different pages.
+ * - `participants`, the people actually in the room. Upstream sends at most
+ *   three, host first then the most recent joiners, and ONLY for a live room
+ *   whose category is `house` — a broadcast never carries it, because that
+ *   field would be publishing who is watching, and watching is not joining.
+ *
+ * `participants` is keyed by view SESSION upstream, and a signed-out listener
+ * has no person behind their session, so this list is routinely shorter than
+ * the room's viewer count and can be empty while a room is busy. It is a list
+ * of faces to draw, never a count: read `viewerCount` for that.
+ */
+export interface MarketSquareRoomDetail {
+  id: string;
+  category: string | null;
+  /** Host first, then whoever joined most recently. May be empty. */
+  participants: MarketSquareHost[];
+}
+
+interface RoomDetailWire {
+  id: string;
+  category?: string | null;
+  participants?:
+    | {
+        id: string;
+        username?: string | null;
+        displayName?: string | null;
+        avatarUrl?: string | null;
+      }[]
+    | null;
+}
+
+/**
+ * One room's own row, for the card that needs its category and its faces.
+ *
+ * Public, like the rest of discovery: upstream answers anybody, and 404s a
+ * private room for a non-member rather than leaking it. The session rides
+ * along when there is one, so a member still sees their own private rooms.
+ */
+export async function fetchRoomDetail(id: string): Promise<MarketSquareRoomDetail> {
+  const wire = await marketSquare.get<RoomDetailWire>(`/streams/${encodeURIComponent(id)}`);
+  return {
+    id: wire.id,
+    category: wire.category ?? null,
+    participants: (wire.participants ?? []).map((person) => ({
+      id: person.id,
+      username: person.username ?? null,
+      displayName: person.displayName ?? null,
+      avatarUrl: person.avatarUrl ?? null,
+    })),
+  };
 }
 
 /** A house, as the directory lists it and the "Popular houses" card shows it. */

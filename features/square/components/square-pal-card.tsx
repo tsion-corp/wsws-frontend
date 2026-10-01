@@ -3,10 +3,11 @@
 import { useState } from "react";
 import { useTranslations } from "next-intl";
 import { useMutation } from "@tanstack/react-query";
+import { track } from "@/lib/analytics/mixpanel";
 import { setFollow, type SuggestedProfile } from "@/lib/api/market-square";
 import { squareLinks } from "@/lib/square/links";
 import { cn } from "@/lib/utils";
-import { SquareAvatar } from "@/features/square/components/square-avatar";
+import { SquareAvatar } from "@/components/ui/square-avatar";
 import {
   IconPalAdd,
   IconPalPass,
@@ -73,6 +74,13 @@ export function SquarePalCard({
     onMutate: (next) => {
       const previous = following;
       setFollowing(next);
+      // `source` is where the button was pressed, which is what says which
+      // surface actually grows the graph.
+      const targetId = person.id;
+      if (targetId) {
+        if (next) track("user_followed", { target_user_id: targetId, source: "pals_deck" });
+        else track("user_unfollowed", { target_user_id: targetId });
+      }
       return { previous };
     },
     onError: (_error, _next, context) => setFollowing(context?.previous ?? false),
@@ -166,8 +174,6 @@ export function SquarePalCard({
       {href && interactive ? (
         <a
           href={href}
-          target="_blank"
-          rel="noopener noreferrer"
           aria-label={name}
           className="absolute block overflow-hidden"
           style={photoStyle}
@@ -200,8 +206,6 @@ export function SquarePalCard({
         {href ? (
           <a
             href={interactive ? href : undefined}
-            target="_blank"
-            rel="noopener noreferrer"
             tabIndex={interactive ? undefined : -1}
             aria-label={t("winkAt", { name })}
             className="ws-pressable relative flex shrink-0 items-center justify-center overflow-hidden rounded-full transition-opacity hover:opacity-90"

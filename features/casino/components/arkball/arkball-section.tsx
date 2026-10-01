@@ -2,14 +2,13 @@
 
 import Image from "next/image";
 import { useTranslations } from "next-intl";
-import { ChessCashierLauncher } from "@/features/casino/components/chess-app/chess-cashier-launcher";
-import { GameGoLive } from "@/features/casino/components/broadcast";
+import { GameGoLive } from "@/features/casino/components/broadcast/go-live-panel";
 import { DrawOverview } from "@/features/casino/components/arkball/draw-overview";
 import { TicketBuilder } from "@/features/casino/components/arkball/ticket-builder";
 import { TicketHistory } from "@/features/casino/components/arkball/ticket-history";
 import { useLottery } from "@/features/casino/hooks/use-lottery";
+import { useArkballReport } from "@/features/casino/hooks/use-arkball-report";
 import { useArkballShine } from "@/features/casino/hooks/use-arcade-shine";
-import { ShineToggle } from "@/components/shine/shine-toggle";
 import { formatLotteryUsdc } from "@/features/casino/lib/lottery";
 import { friendlyError } from "@/lib/errors";
 
@@ -22,6 +21,8 @@ export function ArkBallSection() {
   useArkballShine(lottery.tickets);
   const current = lottery.currentDraw;
   const rule = lottery.config?.rule;
+  // Above the early returns below: a hook cannot be called behind a branch.
+  useArkballReport(current);
 
   if (lottery.loading) {
     return (
@@ -92,8 +93,6 @@ export function ArkBallSection() {
           </div>
         </section>
 
-        <ShineToggle service="arcade" />
-
         <DrawOverview current={current} latest={lottery.results[0] ?? null} />
 
         <div className="grid grid-cols-[minmax(0,1fr)] gap-4 2xl:grid-cols-[minmax(0,1fr)_290px]">
@@ -103,15 +102,19 @@ export function ArkBallSection() {
             salesCloseAt={current.salesCloseAt}
             priceUsdc={rule.pricePerTicketUsdc}
             availableUsdc={lottery.availableUsdc}
+            balanceLoading={lottery.balanceLoading}
+            balanceError={lottery.balanceError}
+            fundingConfigured={lottery.fundingConfigured}
+            pendingTicket={lottery.pendingTicket}
             eligibility={lottery.eligibility}
             ownedTickets={lottery.tickets}
             quickPick={lottery.quickPick}
             purchase={lottery.purchase}
             quickPicking={lottery.quickPicking}
             purchasing={lottery.purchasing}
+            purchasePhase={lottery.purchasePhase}
           />
           <div className="space-y-4">
-            <ChessCashierLauncher compact productName={t("title")} title={t("arkadeBalance")} />
             {/* A draw is public, so anyone watching it can stream it. The
                 surface moves (the countdown, then the balls), so it is
                 published for framerate rather than for a still's sharpness.

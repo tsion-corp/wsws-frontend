@@ -1,4 +1,5 @@
 "use client";
+import { useAuthSession } from "@/hooks/use-auth-session";
 
 import { SOLANA_CHAIN_ID, chainSlug, networkOf } from "@/lib/meme/chain";
 import { scopeOf } from "@/lib/portfolio/fresh-scope";
@@ -30,8 +31,6 @@ import {
 import { useRiskConsent } from "@/features/trade/hooks/use-risk-consent";
 import { usePortfolio } from "@/hooks/use-portfolio";
 import { useReroutedWithdraw } from "@/hooks/use-withdraw";
-import { usePrivy } from "@privy-io/react-auth";
-import { BRAND } from "@/lib/brand";
 import { displaySymbol } from "@/lib/buy";
 import { settlementFor } from "@/lib/deposit";
 import { friendlyError } from "@/lib/errors";
@@ -41,6 +40,15 @@ import { buyFunding, estimateReceive } from "@/lib/meme/funding";
 import { exceedsHeld, maxSellAmount } from "@/lib/meme/sell-amount";
 import { toast } from "@/lib/toast";
 import { track } from "@/lib/analytics/mixpanel";
+import { TRADE_FAILURE, reasonFor } from "@/lib/analytics/failure-reason";
+import {
+  pricedTradeAmounts,
+  swapTradeAmounts,
+  tradeAmounts,
+  USDC_DECIMALS,
+  type TradeAmounts,
+} from "@/lib/analytics/trade-amounts";
+import { swapTradeFacts } from "@/features/trade/lib/trade-analytics";
 import { formatAmount, formatUsd, fromBaseUnits, toBaseUnits } from "@/lib/trade/math";
 import { belowMinimumBuy, minimumBuyUsd } from "@/lib/trade/minimums";
 import {
@@ -49,7 +57,6 @@ import {
   type PendingRwaSettlement,
 } from "@/lib/trade/pending-settlement";
 import { fetchConfirmedSolanaBalance } from "@/lib/trade/solana-balance";
-import { getWalletAddress } from "@/lib/user";
 
 const DECIMAL_INPUT = /^\d*\.?\d*$/;
 const PREVIEW_DEBOUNCE_MS = 600;
@@ -202,7 +209,9 @@ export function MemeTradeSheet({
   // The USD side is always Base; the coin side is the token's chain.
   const tradedNetworks = scopeOf("base-mainnet", network);
   const portfolio = usePortfolio();
-  const { user } = usePrivy();
+  const linkTriedRef = useRef(false);
+  const { ready, authenticated, evmAddress, solanaAddress, profile } = useAuthSession();
+  const addressFor = (chain: string) => (chain === "solana" ? solanaAddress : evmAddress);
   const { withdraw: routeUsdc } = useReroutedWithdraw("trade");
   const [funding, setFunding] = useState<FundingStep>("idle");
   const [fundError, setFundError] = useState<unknown>(null);
@@ -342,7 +351,10 @@ export function MemeTradeSheet({
   // A quote that fails for any reason other than the auto-retried wallet-link
   // mismatch above leaves the details card empty with no other visible signal.
   // Surface it explicitly once there is a real amount to quote.
+  // Gated on previewOpen: the preview is off while a trade runs, so its last
+  // answer is stale and must not be shown as the current state.
   const previewFailed =
+    previewOpen &&
     amountValid &&
     sideEnabled &&
     !overBalance &&
@@ -402,8 +414,8 @@ export function MemeTradeSheet({
   // sheet's part is over at that point, and it says so rather than vanishing.
   async function fundAndQueue() {
     if (submitDisabled) return;
-    const baseWallet = getWalletAddress(user, "ethereum");
-    const solanaWallet = getWalletAddress(user, "solana");
+    const baseWallet = evmAddress;
+    const solanaWallet = solanaAddress;
     if (!baseWallet || !solanaWallet) {
       setFundError(new Error(t("connectWallet")));
       toast.error(t("connectWallet"));
@@ -462,15 +474,45 @@ export function MemeTradeSheet({
     }
   }
 
+  // What the trade is worth, from the quote on screen: the USDC leg is the
+  // dollar figure on both sides and the token leg is the quantity. Without a
+  // quote in USDC, a buy is its exact USDC input and a sale is priced at the
+  // token's listed price. Null when neither exists, so nothing is reported
+  // rather than a dollar figure nobody knows.
+  function tradeValue(): TradeAmounts | null {
+    const fromQuote = quote ? swapTradeAmounts({ ...quote, chainId: token.chainId }, null) : null;
+    if (fromQuote) return fromQuote;
+    if (buying) {
+      return tradeAmounts({
+        usdRaw: toBaseUnits(debouncedAmount, USDC_DECIMALS),
+        usdDecimals: USDC_DECIMALS,
+        tokenRaw: null,
+        tokenDecimals: null,
+        source: "quote",
+      });
+    }
+    const price = Number(token.priceUsd);
+    if (!token.priceUsd || !Number.isFinite(price) || price <= 0) {
+      console.warn(`[analytics] no price for ${token.address}; this sale is not reported`);
+      return null;
+    }
+    return pricedTradeAmounts(toBaseUnits(debouncedAmount, heldDecimals), heldDecimals, price);
+  }
+
   async function onTrade() {
     if (submitDisabled) return;
     setStuckFlag(false);
-    track("trade_previewed", {
-      vertical: "memecoin",
-      asset: token.symbol ?? token.address,
-      side: buying ? "buy" : "sell",
-      amount_usd: Number(debouncedAmount),
-    });
+    // The field holds tokens on a sell, so it is never the dollar figure.
+    const quoted = tradeValue();
+    if (quoted) {
+      track("trade_previewed", {
+        vertical: "memecoin",
+        asset: token.symbol ?? token.address,
+        side: buying ? "buy" : "sell",
+        amount_usd: quoted.amount_usd,
+        token_quantity: quoted.token_quantity,
+      });
+    }
     inFlightRef.current = true;
     toastRef.current = toast.loading(
       buying ? t("buyingToast", { symbol: displaySym }) : t("sellingToast", { symbol: displaySym })
@@ -502,12 +544,37 @@ export function MemeTradeSheet({
         tokenAddress: token.address,
         amount: debouncedAmount,
         chainId: token.chainId,
+        onSubmitted: (swapId) => {
+          if (!quoted) return;
+          track("trade_submitted", {
+            vertical: "memecoin",
+            asset: token.symbol ?? token.address,
+            side: buying ? "buy" : "sell",
+            amount_usd: quoted.amount_usd,
+            token_quantity: quoted.token_quantity,
+            order_id: swapId,
+          });
+        },
         // The Solana path has no quote to read a ticker off, so the sheet
         // hands down the one it is already showing. The Base path ignores
         // this and takes the symbol from its own quote.
         tokenSymbol: displaySym,
       });
       inFlightRef.current = false;
+      // Settles on the token's own chain. A delivered swap counts: the receipt
+      // proves the money moved, whatever the service recorded.
+      const facts = result ? swapTradeFacts(result, quoted) : null;
+      if (facts) {
+        track("trade_completed", {
+          vertical: "memecoin",
+          asset: token.symbol ?? token.address,
+          side: buying ? "buy" : "sell",
+          ...facts,
+          network: chainSlug(token.chainId) ?? "base",
+          token_address: token.address,
+          chain_id: token.chainId === SOLANA_CHAIN_ID ? undefined : token.chainId,
+        });
+      }
       // Only the service's CONFIRMED is "bought" or "sold". Delivered and
       // pending say so, with the reference, and never claim more.
       if (result?.outcome === "delivered" || result?.outcome === "pending") {
@@ -522,15 +589,6 @@ export function MemeTradeSheet({
         void portfolio.refetchUntilChanged(tradedNetworks);
         return;
       }
-      // Settles on the token's own chain, and carries the risk label the
-      // screen showed the user before they confirmed.
-      track("trade_completed", {
-        vertical: "memecoin",
-        token: token.symbol ?? token.address,
-        side: buying ? "buy" : "sell",
-        amount_usd: Number(debouncedAmount),
-        network: chainSlug(token.chainId) ?? "base",
-      });
       toast.success(
         buying
           ? t("toastBought", { symbol: displaySym })
@@ -551,7 +609,9 @@ export function MemeTradeSheet({
       track("trade_failed", {
         vertical: "memecoin",
         asset: token.symbol ?? token.address,
-        reason: "order_failed",
+        side: buying ? "buy" : "sell",
+        ...reasonFor(TRADE_FAILURE, e),
+        amount_usd: quoted?.amount_usd,
       });
       toast.error(friendlyError(e, t("orderFailed"), tErr), { id: toastRef.current });
       toastRef.current = undefined;
@@ -612,8 +672,10 @@ export function MemeTradeSheet({
   const moving = funding === "moving";
   const queued = funding === "queued";
   const tracking = busy || finished || queued;
-  // What support will ask for on a delivered or pending trade.
+  // What support will ask for on a delivered or pending trade. tradeRef yields
+  // an em dash when the service named neither id, and there is nothing to show.
   const ref = tradeRef(swapId, requestId);
+  const showRef = (deliveredOnly || pending) && ref !== "—";
   const trackTitle = queued
     ? t("queuedTitle")
     : moving
@@ -641,12 +703,10 @@ export function MemeTradeSheet({
             ? t("deliveredReceivedBody", {
                 amount: received.amount,
                 symbol: displaySymbol(received.symbol),
-                brand: BRAND,
-                ref,
               })
-            : t("deliveredBody", { brand: BRAND, ref })
+            : t("deliveredBody")
           : pending
-            ? t("pendingBody", { brand: BRAND, ref })
+            ? t("pendingBody")
             : received
               ? t("receivedBody")
               : phase !== "confirming"
@@ -731,6 +791,16 @@ export function MemeTradeSheet({
                 <p className="mt-3 text-[13px] leading-[1.5] font-normal text-white/60">
                   {trackBody}
                 </p>
+                {/* Support asks for this, the reader never does: it sits under
+                    the outcome as fine print instead of interrupting it. */}
+                {showRef ? (
+                  <p
+                    data-testid="meme-trade-ref"
+                    className="mt-2 text-[11.5px] font-normal text-white/40"
+                  >
+                    {t("refNote", { ref })}
+                  </p>
+                ) : null}
                 {/* Once a Solana quote is in hand, the fee it states, in USDC. */}
                 {quotedFee ? (
                   <div className="mt-3 flex justify-between text-[12.5px] font-normal">

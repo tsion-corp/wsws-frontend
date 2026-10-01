@@ -52,10 +52,15 @@ function fundingState() {
   };
 }
 
-function mountCashier() {
+function mountCashier(onOpenFunds?: () => void) {
   return render(
     <NextIntlClientProvider locale="en" messages={messages} timeZone="UTC">
-      <ArkjetCashier balance={null} minimumAmount="0.1" onClose={vi.fn()} />
+      <ArkjetCashier
+        balance={null}
+        minimumAmount="0.1"
+        onClose={vi.fn()}
+        onOpenFunds={onOpenFunds}
+      />
     </NextIntlClientProvider>
   );
 }
@@ -68,6 +73,8 @@ beforeEach(() => {
 });
 
 describe("USDC cashier", () => {
+  // Under the pre-push gate's full-suite load this mount has crossed the
+  // default five seconds; alone it takes well under one.
   it("blocks sub-minimum and excess-precision amounts, then sends native USDC", async () => {
     mountCashier();
     const input = screen.getByPlaceholderText("0.10");
@@ -81,7 +88,7 @@ describe("USDC cashier", () => {
     fireEvent.click(submit);
     await waitFor(() => expect(mocks.deposit).toHaveBeenCalledWith("0.1"));
     expect(screen.queryByText(/NGN/)).not.toBeInTheDocument();
-  });
+  }, 15_000);
 
   it("offers retry for a network outage without calling the vault disabled", () => {
     mocks.funding.mockReturnValue({
@@ -121,5 +128,14 @@ describe("USDC cashier", () => {
 
     await waitFor(() => expect(mocks.recoverDeposit).toHaveBeenCalledWith(txHash));
     expect(mocks.deposit).not.toHaveBeenCalled();
+  });
+
+  it("offers crypto or Naira funding even when the wallet already has USDC", () => {
+    const onOpenFunds = vi.fn();
+    mountCashier(onOpenFunds);
+
+    fireEvent.click(screen.getByRole("button", { name: "Fund with crypto or Naira" }));
+
+    expect(onOpenFunds).toHaveBeenCalledTimes(1);
   });
 });

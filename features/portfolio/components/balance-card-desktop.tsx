@@ -4,7 +4,7 @@ import { useId, useState } from "react";
 import { useTranslations } from "next-intl";
 import { CurrencySelect, useMoney } from "@/components/ui/currency-select";
 import { Disclosure } from "@/components/ui/disclosure";
-import { EyeOffIcon } from "@/components/ui/icons";
+import { EyeOffIcon, RefreshIcon } from "@/components/ui/icons";
 import { useHoldingsLauncher } from "@/features/portfolio/components/holdings-launcher";
 import { PortfolioDonut } from "@/features/portfolio/components/portfolio-donut";
 import type { BalanceCardViewProps } from "@/features/portfolio/components/balance-card-view";
@@ -29,6 +29,8 @@ export function BalanceCardDesktop({
   formatMasked,
   onOpenFunds,
   onOpenWithdraw,
+  updateBalanceSlot,
+  onRefresh,
 }: BalanceCardViewProps) {
   const t = useTranslations("balance");
   const tPortfolio = useTranslations("portfolio");
@@ -130,9 +132,19 @@ export function BalanceCardDesktop({
               </span>
             )}
           </button>
-          {refreshing ? (
-            <span className="bg-accent size-1.5 animate-pulse rounded-full" title="Refreshing…" />
-          ) : null}
+          {/* Manual re-read: the balance is cache-first and doesn't poll, so
+              this pulls in a change made outside the app. Spins while any read
+              (this one or a post-transaction one) is in flight. */}
+          <button
+            type="button"
+            onClick={onRefresh}
+            disabled={refreshing}
+            aria-label={t("refresh")}
+            title={t("refresh")}
+            className="ws-pressable grid size-[36.69px] shrink-0 cursor-pointer place-items-center rounded-full text-white/45 disabled:cursor-default disabled:opacity-70"
+          >
+            <RefreshIcon size={20} className={refreshing ? "animate-spin" : ""} />
+          </button>
         </div>
 
         {loading ? (
@@ -218,6 +230,13 @@ export function BalanceCardDesktop({
             {t("withdraw")}
           </button>
         </div>
+        {/* Its own row, not a third pill in the one above: that row is sized
+            for two and a third wrapped it, leaving Add funds beside this and
+            Withdraw stranded on a line of its own. Full width also suits what
+            it says — the balance above is not the whole story yet. */}
+        {updateBalanceSlot ? (
+          <div className="mt-[12.23px] flex w-full max-w-[452px]">{updateBalanceSlot}</div>
+        ) : null}
 
         {depositPending ? (
           <div className="mt-3 flex max-w-[420px] items-start gap-2 px-2 text-[12.5px] leading-[1.5] font-normal text-white/55">

@@ -5,6 +5,12 @@ import { NextIntlClientProvider } from "next-intl";
 import enMessages from "@/messages/en.json";
 import { CASINO_GAMES, type CasinoGame } from "@/features/casino/lib/games";
 
+// The campaign banner reads the session and the campaign query; here it is a
+// marker, because these tests are about the hub's own layout.
+vi.mock("@/features/casino/components/campaign/arkade-campaign-banner", () => ({
+  ArkadeCampaignBanner: () => <div data-testid="campaign-banner" />,
+}));
+
 vi.mock("@/lib/analytics/mixpanel", () => ({ track: vi.fn() }));
 // The surface reads the wallet balance for the header pill; the balance itself
 // is not under test, so the hook is stubbed to a settled, empty portfolio.
@@ -100,9 +106,26 @@ const ayo: CasinoGame = {
   comingSoon: true,
 };
 
+// A game that is playable but has no agreed analytics id, which is the case
+// the catalogue's map is there to handle.
+const poker: CasinoGame = {
+  ...ayo,
+  id: "poker",
+  name: "Poker",
+  href: "/casino/poker",
+  comingSoon: false,
+};
+
 const sample = [chess, arkball, lastMan, ayo];
 
 describe("ArkadeMobile", () => {
+  // Built, and hidden by the team's call (2026-09-30). The mount stays behind
+  // ARKADE_CAMPAIGN_BANNER_HIDDEN so showing it again is one flag.
+  it("does not mount the campaign banner while it is hidden", () => {
+    renderMobile(<ArkadeMobile games={sample} />);
+    expect(screen.queryByTestId("campaign-banner")).toBeNull();
+  });
+
   beforeEach(() => tracked.mockClear());
 
   it("draws the featured banner ahead of the rails when nothing is filtered", () => {
@@ -171,7 +194,7 @@ describe("ArkadeMobile", () => {
   });
 
   it("reports game_opened with the catalogue's analytics id", () => {
-    renderMobile(<ArkadeMobile games={[chess, arkball, lastMan]} />);
+    renderMobile(<ArkadeMobile games={[chess, arkball, lastMan, poker]} />);
 
     fireEvent.click(screen.getByRole("link", { name: "Play Chess" }));
     expect(tracked).toHaveBeenCalledWith("game_opened", { game: "chess" });
@@ -179,9 +202,15 @@ describe("ArkadeMobile", () => {
     // itself, so a second call would mean the event had been duplicated.
     expect(tracked).toHaveBeenCalledTimes(1);
 
-    // ArkBall has no agreed analytics id, so opening it reports nothing.
+    // ArkBall has an id of its own now, and reports under it.
     tracked.mockClear();
     fireEvent.click(screen.getByRole("link", { name: "Play ArkBall" }));
+    expect(tracked).toHaveBeenCalledWith("game_opened", { game: "arkball" });
+
+    // Poker has no agreed analytics id, so opening it reports nothing rather
+    // than inventing one.
+    tracked.mockClear();
+    fireEvent.click(screen.getByRole("link", { name: "Play Poker" }));
     expect(tracked).not.toHaveBeenCalled();
   });
 
@@ -230,15 +259,13 @@ describe("ArkadeMobile", () => {
     expect(screen.getAllByRole("link")).toHaveLength(playable);
   });
 
-  it("carries the arcade's Shine switch where it cannot be missed", () => {
-    // One switch governs every game in the arcade, and it is on by default.
-    // Putting it on the hub means the first place a person meets Shine is the
-    // page they play from, rather than a post that already exists.
+  // Shine moved to the account menu on 2026-09-25: one switch panel for all
+  // seven services instead of a card on each page. This asserts the card has
+  // not come back, which is what stops them reappearing one page at a time.
+  it("does not carry a Shine card: Shine lives in the account menu", () => {
+    // Shine moved to the account menu on 2026-09-25. Asserting its absence
+    // here is what stops a per-page card reappearing.
     renderMobile(<ArkadeMobile />);
-    const shine = screen.getByRole("switch", {
-      name: enMessages.shine.toggleLabel,
-    });
-    expect(shine).toBeTruthy();
-    expect(shine.closest("section")?.textContent).toContain(enMessages.shine.keepsPosts);
+    expect(screen.queryByRole("switch", { name: enMessages.shine.toggleLabel })).toBeNull();
   });
 });

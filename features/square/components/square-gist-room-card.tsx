@@ -2,7 +2,7 @@
 
 import { useTranslations } from "next-intl";
 import { squareLinks } from "@/lib/square/links";
-import { SquareAvatar } from "@/features/square/components/square-avatar";
+import { SquareAvatar } from "@/components/ui/square-avatar";
 import {
   IconRoomBadgeMic,
   IconSpark,
@@ -80,8 +80,6 @@ export function SquareGistRoomCard({
           {href ? (
             <a
               href={href}
-              target="_blank"
-              rel="noopener noreferrer"
               style={{ background: SQUARE_RAMP }}
               className="ws-pressable flex h-5 w-fit items-center gap-[3px] rounded-[30px] px-3 text-[11px] leading-none font-medium text-white transition-opacity hover:opacity-90"
             >

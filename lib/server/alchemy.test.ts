@@ -115,6 +115,7 @@ describe("allowedContracts", () => {
 // Solana keeps the Portfolio API until its own change.
 describe("fetchPortfolio upstreams", () => {
   const WALLET = "0x1111111111111111111111111111111111111111";
+  let solanaPrices: (mints: string[]) => Map<string, number> = () => new Map();
   beforeEach(() => {
     vi.resetModules();
     vi.stubEnv("ZERODEV_PROJECT_ID", "test-project-id-123");
@@ -122,25 +123,41 @@ describe("fetchPortfolio upstreams", () => {
     vi.doMock("@/lib/server/rwa-registry", () => ({ fetchRwaRegistry: async () => ({}) }));
     vi.doMock("@/lib/server/buyable-registry", () => ({
       fetchBuyableRegistry: async () => ({ buyable: {}, meme: {} }),
+      // Discovery asks the catalogue about each held contract by address.
+      // Without this the call throws, and a throwing discovery is never
+      // cached — which is how a "once per wallet" read turns into one per
+      // poll without a single assertion noticing.
+      confirmBaseTokens: async () => new Map(),
+    }));
+    // The second price source for Solana mints. Empty unless a test says
+    // otherwise, so the allowlist tests below see exactly Alchemy's answer.
+    vi.doMock("@/lib/server/solana-prices", () => ({
+      fetchSolanaMintPrices: async (mints: string[]) => solanaPrices(mints),
     }));
   });
   afterEach(async () => {
     const { resetResponseCache } = await import("./response-cache");
     resetResponseCache();
+    solanaPrices = () => new Map();
     vi.doUnmock("@/lib/server/rwa-registry");
     vi.doUnmock("@/lib/server/buyable-registry");
+    vi.doUnmock("@/lib/server/solana-prices");
     vi.unstubAllEnvs();
     vi.unstubAllGlobals();
   });
 
-  function stubFetch() {
+  // `bodies`, when passed, collects each request's payload alongside its URL —
+  // the Portfolio API is one endpoint for both the Solana leg and the EVM
+  // discovery, so only the body says which one a call was.
+  function stubFetch(bodies?: { url: string; body: string }[]) {
     const seen: string[] = [];
     vi.stubGlobal(
       "fetch",
-      vi.fn(async (input: RequestInfo | URL) => {
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url =
           typeof input === "string" ? input : ((input as URL).href ?? (input as Request).url);
         seen.push(url);
+        if (bodies && typeof init?.body === "string") bodies.push({ url, body: init.body });
         const ok = (body: unknown) =>
           new Response(JSON.stringify(body), {
             status: 200,
@@ -166,17 +183,37 @@ describe("fetchPortfolio upstreams", () => {
     return seen;
   }
 
-  it("never calls the Portfolio API for an EVM wallet", async () => {
+  // EVM BALANCES never come from the Portfolio API — it pages through every
+  // airdrop a wallet ever received, and this read runs every 30 seconds. It is
+  // used for one thing only: discovering which contracts the wallet holds that
+  // the ranked catalogue never reached, on its own ten-minute clock. So one
+  // call per wallet, and none at all on the polls behind it.
+  it("reads EVM balances from the chain, and the Portfolio API only to discover holdings", async () => {
+    const seen = stubFetch();
+    const { fetchPortfolio } = await import("./alchemy");
+
+    await fetchPortfolio(WALLET, undefined);
+
+    expect(seen.filter((u) => u.includes("rpc.zerodev.app")).length).toBe(EVM_NETWORKS.length);
+    expect(seen.filter((u) => u.includes("assets/tokens/by-address")).length).toBe(1);
+  });
+
+  it("does not repeat discovery on the polls behind it", async () => {
     const seen = stubFetch();
     const { fetchPortfolio } = await import("./alchemy");
     await fetchPortfolio(WALLET, undefined);
-    expect(seen.some((u) => u.includes("assets/tokens/by-address"))).toBe(false);
-    // Every EVM network was read, none of them through the Portfolio API.
-    expect(seen.filter((u) => u.includes("rpc.zerodev.app")).length).toBe(EVM_NETWORKS.length);
+    const warm = seen.length;
+
+    // `fresh` re-reads the balances; discovery is on its own clock and must
+    // not be dragged along with them.
+    await fetchPortfolio(WALLET, undefined, "all");
+
+    expect(seen.slice(warm).some((u) => u.includes("assets/tokens/by-address"))).toBe(false);
   });
 
   it("reads only Base and skips Solana for the Base-only portfolio", async () => {
-    const seen = stubFetch();
+    const bodies: { url: string; body: string }[] = [];
+    const seen = stubFetch(bodies);
     const { fetchPortfolio } = await import("./alchemy");
     const SOLANA = "So1anaWa11etAddress111111111111111111111111";
 
@@ -185,7 +222,12 @@ describe("fetchPortfolio upstreams", () => {
     const chainReads = seen.filter((u) => u.includes("rpc.zerodev.app"));
     expect(chainReads).toHaveLength(1);
     expect(chainReads[0]).toContain("/chain/8453");
-    expect(seen.some((u) => u.includes("assets/tokens/by-address"))).toBe(false);
+    // One Portfolio API call, and it is the Base discovery — not the Solana
+    // leg, which this scope has no business reading.
+    const byAddress = bodies.filter((b) => b.url.includes("assets/tokens/by-address"));
+    expect(byAddress).toHaveLength(1);
+    expect(byAddress[0].body).toContain("base-mainnet");
+    expect(byAddress[0].body).not.toContain(SOLANA);
   });
 
   // A trade on Base must not re-read the 27 other networks or re-page the
@@ -219,6 +261,98 @@ describe("fetchPortfolio upstreams", () => {
     const since = seen.slice(warm);
     expect(since.filter((u) => u.includes("assets/tokens/by-address")).length).toBe(1);
     expect(since.some((u) => u.includes("rpc.zerodev.app"))).toBe(false);
+  });
+
+  // Seen 2026-09-25: an old wallet holding priced SPL tokens showed the
+  // migration nothing but its SOL and USDC. The whole-wallet read the EVM
+  // side has been doing was never applied to Solana, whose allowlist is three
+  // symbols long, and there is no Solana catalogue to admit the rest from.
+  it("admits a priced Solana token the old wallet holds, on the legacy read only", async () => {
+    const SOLANA = "So1anaWa11etAddress111111111111111111111111";
+    const PRICED = "PrIcEdMint111111111111111111111111111111111";
+    const UNPRICED = "UnPrIcEdMint1111111111111111111111111111111";
+    // Alchemy has no price for it; the second source does. PRCL, live.
+    const SECOND = "4LLbsb5ReP3yEtYzmXewyGjcir5uXtKFURtaEUVC2AHs";
+    solanaPrices = (mints) => {
+      // Only the mints Alchemy could not price are asked about.
+      expect(mints).toEqual(expect.arrayContaining([UNPRICED, SECOND]));
+      expect(mints).not.toContain(PRICED);
+      return new Map([[SECOND, 0.0059]]);
+    };
+    stubFetch();
+    vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url =
+        typeof input === "string" ? input : ((input as URL).href ?? (input as Request).url);
+      const ok = (body: unknown) =>
+        new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      if (url.includes("assets/tokens/by-address") && String(init?.body).includes(SOLANA)) {
+        return ok({
+          data: {
+            tokens: [
+              {
+                network: "solana-mainnet",
+                tokenAddress: PRICED,
+                tokenBalance: "250000000",
+                tokenMetadata: { decimals: 6, symbol: "BONK", name: "Bonk" },
+                tokenPrices: [{ currency: "usd", value: "0.00002" }],
+              },
+              {
+                network: "solana-mainnet",
+                tokenAddress: UNPRICED,
+                tokenBalance: "1000000000",
+                tokenMetadata: { decimals: 9, symbol: "SPAM", name: "Spam" },
+                tokenPrices: [],
+              },
+              {
+                network: "solana-mainnet",
+                tokenAddress: SECOND,
+                tokenBalance: "5627359476",
+                tokenMetadata: { decimals: 6, symbol: "PRCL", name: "Parcl" },
+                tokenPrices: [],
+              },
+              {
+                network: "solana-mainnet",
+                tokenAddress: null,
+                tokenBalance: "2000000000",
+                tokenPrices: [{ currency: "usd", value: "150" }],
+              },
+            ],
+          },
+        });
+      }
+      if (url.includes("assets/tokens/by-address")) return ok({ data: { tokens: [] } });
+      if (url.includes("/tokens/by-symbol")) return ok({ data: [] });
+      return ok({});
+    });
+    const { fetchPortfolio } = await import("./alchemy");
+
+    const legacy = await fetchPortfolio(undefined, SOLANA, "all", "legacy");
+    const symbols = (t: { symbol: string; balance: number }[]) =>
+      t.filter((x) => x.balance > 0).map((x) => x.symbol);
+    expect(symbols(legacy.tokens)).toEqual(expect.arrayContaining(["BONK", "SOL", "PRCL"]));
+    // A mint neither feed prices is admitted too, unpriced: the leg can send
+    // any mint, and the sweep moves it while the totals ignore it. Before,
+    // it never reached the review at all.
+    expect(symbols(legacy.tokens)).toContain("SPAM");
+    const spam = legacy.tokens.find((t) => t.symbol === "SPAM")!;
+    expect(spam.priceUsd).toBe(0);
+    expect(spam.valueUsd).toBe(0);
+    const prcl = legacy.tokens.find((t) => t.symbol === "PRCL")!;
+    expect(prcl.priceUsd).toBeCloseTo(0.0059);
+    expect(prcl.valueUsd).toBeCloseTo(5627.359476 * 0.0059, 2);
+    const bonk = legacy.tokens.find((t) => t.symbol === "BONK")!;
+    expect(bonk.address).toBe(PRICED);
+    expect(bonk.rawBalance).toBe("250000000");
+    expect(bonk.priceUsd).toBeCloseTo(0.00002);
+
+    // The everyday portfolio keeps its allowlist: no spam can reach it.
+    solanaPrices = () => new Map();
+    const everyday = await fetchPortfolio(undefined, SOLANA, "all");
+    expect(symbols(everyday.tokens)).not.toContain("BONK");
+    expect(symbols(everyday.tokens)).not.toContain("PRCL");
   });
 
   it("still sweeps everything for the legacy fresh=1", async () => {
@@ -365,5 +499,63 @@ describe("fetchPortfolio, a held meme with no catalogue price", () => {
     expect(meme?.balance).toBe(5);
     expect(meme?.priceUsd).toBe(0);
     expect(meme?.valueUsd).toBe(0);
+  });
+});
+
+// A wallet with both chains lost its EVM balances silently: the Solana leg
+// answered, so the snapshot looked complete, and a complete snapshot is
+// cached and never re-read. The EVM networks have to be reported as missing.
+describe("fetchPortfolio when the chain read fails", () => {
+  const WALLET = "0x1111111111111111111111111111111111111111";
+  const SOLANA = "So1anaWa11etAddress111111111111111111111111";
+
+  beforeEach(() => {
+    vi.resetModules();
+    vi.stubEnv("ALCHEMY_API_KEY", "alchemy-key");
+    vi.doMock("@/lib/server/rwa-registry", () => ({ fetchRwaRegistry: async () => ({}) }));
+    vi.doMock("@/lib/server/buyable-registry", () => ({
+      fetchBuyableRegistry: async () => ({ buyable: {}, meme: {} }),
+    }));
+    vi.doMock("@/lib/server/portfolio-holdings", async () => {
+      const actual = await vi.importActual<typeof import("@/lib/server/portfolio-holdings")>(
+        "@/lib/server/portfolio-holdings"
+      );
+      return {
+        ...actual,
+        readEvmPortfolioTokens: vi.fn(async () => {
+          throw new Error("read pool unavailable");
+        }),
+      };
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(JSON.stringify({ data: { tokens: [] } }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          })
+      )
+    );
+  });
+  afterEach(async () => {
+    const { resetResponseCache } = await import("./response-cache");
+    resetResponseCache();
+    vi.doUnmock("@/lib/server/portfolio-holdings");
+    vi.doUnmock("@/lib/server/rwa-registry");
+    vi.doUnmock("@/lib/server/buyable-registry");
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+  });
+
+  it("reports the EVM networks as missing rather than as a complete snapshot", async () => {
+    const { fetchPortfolio } = await import("./alchemy");
+    const portfolio = await fetchPortfolio(WALLET, SOLANA);
+    expect(portfolio.missing).toEqual(expect.arrayContaining(["base-mainnet"]));
+  });
+
+  it("still fails outright when the wallet has no other chain to fall back on", async () => {
+    const { fetchPortfolio } = await import("./alchemy");
+    await expect(fetchPortfolio(WALLET, undefined)).rejects.toThrow();
   });
 });

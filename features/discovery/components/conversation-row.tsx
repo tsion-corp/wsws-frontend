@@ -106,11 +106,7 @@ export function ConversationRow({ spaces = [] }: { spaces?: readonly SpaceSpot[]
   const squareHome = marketSquareHref();
 
   return (
-    <DiscoveryRow
-      title={t("conversationTitle")}
-      href={squareHome ?? "/casino/chess"}
-      external={squareHome !== null}
-    >
+    <DiscoveryRow title={t("conversationTitle")} href={squareHome ?? "/casino/chess"}>
       <Carousel label={t("conversationCarousel")} gapPx={20} trimPx={50}>
         <ChessRoomCard room={room} onHold={hold} />
         {/* A hidden square has no rooms and no deployment to link to, so its

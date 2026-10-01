@@ -14,6 +14,7 @@ import {
   patchCommentIn,
   threadOf,
 } from "@/lib/square/comment-thread";
+import { track } from "@/lib/analytics/mixpanel";
 import {
   addPostComment,
   fetchCommentReplies,
@@ -23,7 +24,7 @@ import {
   type MarketSquareFeedPost,
 } from "@/lib/api/market-square";
 import { useBumpCommentCount } from "@/features/square/hooks/use-square-engage";
-import { SquareAvatar } from "@/features/square/components/square-avatar";
+import { SquareAvatar } from "@/components/ui/square-avatar";
 import {
   OrgBadgeChip,
   RoleChip,
@@ -114,7 +115,7 @@ function AuthorLink({ username, children }: { username: string; children: React.
   const href = marketSquareHref(`u/${username}`);
   if (!href) return <>{children}</>;
   return (
-    <a href={href} target="_blank" rel="noopener noreferrer" className="hover:underline">
+    <a href={href} className="hover:underline">
       {children}
     </a>
   );
@@ -122,11 +123,13 @@ function AuthorLink({ username, children }: { username: string; children: React.
 
 function CommentBox({
   postId,
+  authorId,
   replyTo,
   onCancelReply,
   onPosted,
 }: {
   postId: string;
+  authorId?: string;
   replyTo: ReplyTarget | null;
   onCancelReply: () => void;
   onPosted: (comment: MarketSquareComment, parentId: string | null) => void;
@@ -141,6 +144,9 @@ function CommentBox({
   const add = useMutation({
     mutationFn: (body: string) => addPostComment(postId, body, replyTo?.parentId),
     onSuccess: (comment) => {
+      // A reply is a comment on the same post, so both report the one event:
+      // the catalog counts comments on a post, not threads within them.
+      track("post_commented", { post_id: postId, ...(authorId ? { author_id: authorId } : {}) });
       onPosted(comment, replyTo?.parentId ?? null);
       setText("");
       onCancelReply();
@@ -489,6 +495,7 @@ export function SquareCommentsSheet({
         </div>
         <CommentBox
           postId={post.id}
+          authorId={post.author?.id}
           replyTo={replyTo}
           onCancelReply={() => setReplyTo(null)}
           onPosted={onPosted}

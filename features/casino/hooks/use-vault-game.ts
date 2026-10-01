@@ -5,6 +5,10 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { usePrices } from "@/hooks/use-prices";
 import { useVaultSocket } from "@/features/casino/hooks/use-vault-socket";
 import { seedGame } from "@/features/casino/lib/last-standing/seed-game";
+import {
+  rememberMetadata,
+  withKnownMetadata,
+} from "@/features/casino/lib/last-standing/metadata-memory";
 import { VAULT_KEYS } from "@/features/casino/lib/last-standing/keys";
 import { vaultLog } from "@/features/casino/lib/last-standing/log";
 import { priced } from "@/features/casino/lib/last-standing/pricing";
@@ -15,6 +19,19 @@ import {
 import { fetchGame, isVaultNotFound, type VaultGame } from "@/features/casino/lib/vault-api";
 
 const FALLBACK_POLL_MS = 5_000;
+
+function rememberOne(game: VaultGame): VaultGame {
+  rememberMetadata([game]);
+  return game;
+}
+
+// A slow reconcile that runs even on a healthy socket, for the same reason the
+// lobby has one: the socket is authoritative for liveness, not for everything
+// a row carries. A game's NAME is bound when the reconciler indexes its
+// GameStarted log, which is after the page's first read, and no socket frame
+// has ever carried one. Without this the page would show "Game 258" for the
+// whole round even though the service had the name seconds in.
+const RECONCILE_POLL_MS = 20_000;
 // The service falls through to the contract for a game its index has not
 // reached, but that read is a block or two behind the receipt the client
 // holds, so a fresh game is asked for a few times a second apart.
@@ -47,10 +64,44 @@ const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
  * add a way to be wrong without adding an answer. See
  * ADR-2026-09-15-last-man-v5-usdc, decision 7.
  */
+/**
+ * Whether a row is plausibly the game the caller has just paid for.
+ *
+ * Two rows are not, and both come back with a 200 rather than a 404, so the
+ * retry loop below never saw either of them:
+ *
+ * - The ALL-ZERO row. The service answers for a game its index has not reached
+ *   by reading the contract, and that read can land a block or two before the
+ *   start transaction. The id is real, the round has not begun: no pot, no end
+ *   time, not active.
+ * - A SETTLED row. A game the caller created a moment ago cannot already be
+ *   over. This is the legacy contract showing through: ids repeat across
+ *   contract generations, v4 ran past 400 while v5 has only just passed 190,
+ *   so an id in that window still answers with v4's long-settled ETH game
+ *   until v5's own row is indexed (checked live on 2026-09-23: 194 served a
+ *   settled v4 row, and 193 served the v5 row once it existed).
+ */
+function looksLikeAFreshGame(game: VaultGame): boolean {
+  if (game.settled) return false;
+  return game.active || game.endTime > 0;
+}
+
 async function loadFreshGame(gameId: number): Promise<VaultGame | null> {
   for (let attempt = 1; attempt <= CONFIRM_ATTEMPTS; attempt += 1) {
     try {
-      return await fetchGame(gameId);
+      const game = await fetchGame(gameId);
+      if (looksLikeAFreshGame(game)) return game;
+      // Seeding this would write it into the cache as FRESH, so the arena
+      // would open on it and — with the socket up and the REST poll therefore
+      // off — nothing would ever replace it. The same game opened from the
+      // lobby was always fine, because nothing seeds it there.
+      vaultLog(`confirm ${gameId}: row is not the game just created`, {
+        attempt,
+        settled: game.settled,
+        endTime: game.endTime,
+      });
+      if (attempt < CONFIRM_ATTEMPTS) await wait(CONFIRM_RETRY_MS);
+      continue;
     } catch (error) {
       if (isVaultNotFound(error)) {
         vaultLog(`confirm ${gameId}: service has no row yet`, { attempt });
@@ -105,7 +156,9 @@ export function useVaultGame(gameId: number | null) {
     queryFn: async () => {
       const id = gameId as number;
       try {
-        return await fetchGame(id);
+        // A response without a name does not mean the game lost one; see
+        // lib/last-standing/metadata-memory.
+        return withKnownMetadata(rememberOne(await fetchGame(id)));
       } catch (error) {
         // A 404 is final; anything else is the service being unreachable, and
         // the retry below handles that. The service reads the chain itself
@@ -115,7 +168,7 @@ export function useVaultGame(gameId: number | null) {
     },
     enabled: gameId !== null,
     staleTime: FALLBACK_POLL_MS,
-    refetchInterval: connected ? false : FALLBACK_POLL_MS,
+    refetchInterval: connected ? RECONCILE_POLL_MS : FALLBACK_POLL_MS,
     // A game that was never started stays that way; polling will not change it.
     retry: (count, error) => !isVaultNotFound(error) && count < 3,
     select: withUsd,
@@ -172,6 +225,33 @@ export function useVaultGame(gameId: number | null) {
     unfollowGame();
   }, [gameId, settled, missing]);
 
+  // The contract's endTime, applied to the cached game.
+  //
+  // The round-end check reads games(id) when the clock hits zero. When it
+  // comes back saying the round was extended, that endTime is the only fresh
+  // fact anyone has: the indexer has not caught up, so a refetch returns the
+  // stale one and the clock sits at 00:00 believing the round is over. Writing
+  // it restarts the countdown from the truth.
+  //
+  // Only ever forward. A read that raced a fresher socket frame must not pull
+  // the clock back.
+  const extendTo = useCallback(
+    (endTime: number) => {
+      if (gameId === null) return;
+      queryClient.setQueryData<VaultGame>(VAULT_KEYS.game(gameId), (current) =>
+        current && endTime > current.endTime
+          ? {
+              ...current,
+              endTime,
+              active: true,
+              timeRemaining: Math.max(0, endTime - Math.floor(Date.now() / 1000)),
+            }
+          : current
+      );
+    },
+    [gameId, queryClient]
+  );
+
   const online = useSyncExternalStore(subscribeOnline, onlineNow, onlineOnServer);
   // Degraded: what the screen shows cannot be trusted as current. Either the
   // browser knows it is offline, or the socket is down AND the REST fallback
@@ -192,5 +272,6 @@ export function useVaultGame(gameId: number | null) {
     degraded,
     confirmGame,
     resync,
+    extendTo,
   };
 }

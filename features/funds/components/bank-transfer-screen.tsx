@@ -1,23 +1,26 @@
 "use client";
+import { useAuthSession } from "@/hooks/use-auth-session";
 
 import { useEffect, useState } from "react";
 import { useTranslations } from "next-intl";
-import { usePrivy } from "@privy-io/react-auth";
 import { SheetNav } from "@/components/ui/sheet-nav";
+import { useModalScreen } from "@/components/ui/modal-shell";
 import { BankIcon, CheckIcon, CopyIcon } from "@/components/ui/icons";
 import { usePortfolio } from "@/hooks/use-portfolio";
 import {
   markRampOrderPaid,
   useCreateOnrampOrder,
+  useRampingQuote,
   useRampingRates,
   useRampOrder,
 } from "@/hooks/use-ramping";
 import { copyText } from "@/lib/clipboard";
 import { MASK_ATTRIBUTE, NO_AUTOCAPTURE_CLASS } from "@/lib/analytics/clarity";
 import { track } from "@/lib/analytics/mixpanel";
+import { DEPOSIT_FAILURE, reasonFor } from "@/lib/analytics/failure-reason";
 import { friendlyError } from "@/lib/errors";
 import { errorCode } from "@/lib/api/envelope";
-import { getWalletAddress } from "@/lib/user";
+
 import {
   idempotencyKey,
   isValidOnrampNgn,
@@ -95,13 +98,18 @@ function compactNgn(amount: number): string {
 // USDC settles to the wallet automatically once the payment clears, and the
 // final figures shown come from the order itself, never from our own math.
 export function BankTransferScreen({ onBack, onClose }: BankTransferScreenProps) {
+  // The flow takes the whole phone, with Back beside the shell's close button
+  // so the rest of the screen is free to centre itself on a tall one.
+  useModalScreen({ back: onBack, fullScreen: true });
+
   const t = useTranslations("bankTransfer");
-  const { user } = usePrivy();
+  const { ready, authenticated, evmAddress, solanaAddress, profile } = useAuthSession();
+  const addressFor = (chain: string) => (chain === "solana" ? solanaAddress : evmAddress);
   const { refetch } = usePortfolio();
   const { data: rates } = useRampingRates();
   const rate = rates?.onrampRate ?? null;
 
-  const walletAddress = getWalletAddress(user, "ethereum");
+  const walletAddress = evmAddress;
 
   const [amountNgn, setAmountNgn] = useState("");
   // After the user says they have paid, we show a brief confirming state and
@@ -118,8 +126,13 @@ export function BankTransferScreen({ onBack, onClose }: BankTransferScreenProps)
   const activeOrderId = created?.id ?? reused?.orderId ?? null;
 
   const ngnAmount = Number(amountNgn);
-  const estimateUsdc = rate && amountNgn ? usdcForNgnExact(amountNgn, rate) : null;
   const validAmount = isValidOnrampNgn(ngnAmount);
+  // The rail's own conversion, so the figure on screen is the one it will use.
+  // The local one covers the moment before the quote lands.
+  const quote = useRampingQuote("onramp", validAmount ? amountNgn : null);
+  const estimateUsdc =
+    (quote.data?.side === "onramp" ? quote.data.outputAmount : null) ??
+    (rate && amountNgn ? usdcForNgnExact(amountNgn, rate) : null);
 
   const orderQuery = useRampOrder("onramp", activeOrderId, {
     enabled: Boolean(activeOrderId),
@@ -211,7 +224,7 @@ export function BankTransferScreen({ onBack, onClose }: BankTransferScreenProps)
   if (!created && (!reused || reusedDead)) {
     return (
       <div>
-        <SheetNav title={t("title")} subtitle={t("subtitle")} onBack={onBack} />
+        <SheetNav title={t("title")} subtitle={t("subtitle")} />
 
         <div className="mt-8 rounded-2xl border border-white/15 bg-[#1b1b1b] px-5 pt-5 pb-6">
           <div className="mb-6 text-[14px] font-medium text-white/50 capitalize">
@@ -300,9 +313,16 @@ export function BankTransferScreen({ onBack, onClose }: BankTransferScreenProps)
                 Date.now()
               );
               track("bank_account_requested", {
+                provider: cached.account.bankName,
                 amount_ngn: ngnAmount,
                 fx_rate: Number(rate) || 0,
                 reused: true,
+              });
+              // The account is already in hand, so it is generated in the same
+              // breath it is asked for.
+              track("bank_account_generated", {
+                provider: cached.account.bankName,
+                bank: cached.account.bankName,
               });
               return;
             }
@@ -339,9 +359,36 @@ export function BankTransferScreen({ onBack, onClose }: BankTransferScreenProps)
                   // The amount and the rate the user accepted. Never the
                   // account number that came back with them.
                   track("bank_account_requested", {
+                    provider: result.paymentAccount?.bankName ?? "",
                     amount_ngn: ngnAmount,
                     fx_rate: Number(rate) || 0,
                     reused: false,
+                  });
+                  if (result.paymentAccount) {
+                    track("bank_account_generated", {
+                      provider: result.paymentAccount.bankName,
+                      bank: result.paymentAccount.bankName,
+                    });
+                  } else {
+                    // The order was created but carries no account to pay
+                    // into, so there is nothing for the user to do with it.
+                    track("bank_account_failed", {
+                      provider: "",
+                      reason: "account_generation_failed",
+                    });
+                  }
+                },
+                onError: (error) => {
+                  track("bank_account_failed", {
+                    provider: "",
+                    ...reasonFor(DEPOSIT_FAILURE, error),
+                  });
+                  // The dollar value is not known here: the user entered naira
+                  // and no order came back to convert it, so it is left out
+                  // rather than guessed from the quoted rate.
+                  track("deposit_failed", {
+                    method: "bank",
+                    ...reasonFor(DEPOSIT_FAILURE, error),
                   });
                 },
               }
@@ -469,7 +516,7 @@ export function BankTransferScreen({ onBack, onClose }: BankTransferScreenProps)
   const account = order?.paymentAccount ?? null;
   return (
     <div>
-      <SheetNav title={t("transferTitle")} onBack={onBack} />
+      <SheetNav title={t("transferTitle")} />
 
       {account ? (
         <>

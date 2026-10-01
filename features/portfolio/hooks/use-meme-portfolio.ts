@@ -2,7 +2,7 @@
 
 import { useCallback, useMemo } from "react";
 import { useInfiniteQuery, useQuery, type QueryKey } from "@tanstack/react-query";
-import { usePrivy } from "@privy-io/react-auth";
+import { useAuthSession } from "@/hooks/use-auth-session";
 import { useSectionActive } from "@/components/ui/section-visibility";
 import { nextCatalogPage, type Paged } from "@/lib/meme/catalog";
 import {
@@ -34,7 +34,10 @@ export const MEME_PORTFOLIO_POLL_MS = 60_000;
 const STALE_MS = 30_000;
 
 function useSignedIn(): boolean {
-  const { ready, authenticated } = usePrivy();
+  // Through the Decane-backed session seam. Privy is not a provider on these
+  // routes any more (ADR-0009), so the old hook would throw here rather than
+  // read as signed out.
+  const { ready, authenticated } = useAuthSession();
   return ready && authenticated;
 }
 

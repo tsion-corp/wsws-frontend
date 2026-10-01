@@ -20,6 +20,24 @@ const spot = vi.hoisted(() => ({
   loading: false,
   error: null as unknown,
 }));
+// The screen carries the Shine switch, which reads the account's own
+// preference through React Query and the session. Stubbed: this test is about
+// the screen, not the switch, which has its own suite in components/shine.
+vi.mock("@/hooks/use-shine", () => ({
+  useShine: () => ({
+    preferences: null,
+    isResolved: false,
+    isLoading: false,
+    isSignedIn: false,
+    isSaving: false,
+    error: null,
+    isOn: () => true,
+    mayPost: () => false,
+    setShine: async () => {},
+    refetch: () => {},
+  }),
+}));
+
 vi.mock("@/features/trade/hooks/use-spot-markets", () => ({
   useSpotMarkets: () => spot,
 }));
@@ -345,8 +363,11 @@ function renderView() {
   return { onOpenDetail, onOpenBuy, rerender: () => rerender(view()) };
 }
 
+// The strip this build offers. HIDDEN_TABS is empty as of 2026-09-25, so the
+// strip is TABS in full and every seat is dealt in the view's own order.
+// Leverage sits second, which is why the indices below are not 0..3.
 const tabNames = ["Spot", "Leverage", "Memecoins", "Real assets", "Prediction"];
-const [SPOT, PERPS, MEMES, RWA, PREDICTION] = [0, 1, 2, 3, 4];
+const [SPOT, LEVERAGE, MEMES, RWA, PREDICTION] = [0, 1, 2, 3, 4];
 
 // Each tab names its own field, so a test says which list it is searching.
 // The Real assets and Prediction fields belong to those panels, not to this
@@ -422,7 +443,7 @@ beforeEach(() => {
 
 describe("MobileMarketView chrome", () => {
   // Gap 3: the strip is a real tab control, not a row of buttons.
-  it("renders a labelled tablist of the five market categories", () => {
+  it("renders a labelled tablist of the market categories it offers", () => {
     renderView();
     const strip = screen.getByRole("tablist", { name: "Market categories" });
     const found = within(strip)
@@ -446,28 +467,44 @@ describe("MobileMarketView chrome", () => {
     expect(tabs()[SPOT]).toHaveAttribute("tabindex", "-1");
   });
 
-  it("mounts the perps desk only on the Leverage tab, in a scroll box", () => {
+  // The desk is mounted only while its own tab is selected, so the market
+  // reads it makes are not made for a reader who never opens it. That is the
+  // half worth asserting: "it renders" would pass even if it rendered on every
+  // tab, which is the shape this guards against.
+  it("mounts the perps desk on the Leverage tab and nowhere else", () => {
     renderView();
     expect(screen.queryByTestId("perps-desk")).toBeNull();
 
-    fireEvent.click(tabs()[PERPS]);
-    expect(screen.getByRole("tabpanel")).toHaveAccessibleName("Leverage");
-    expect(screen.getByTestId("perps-panel-scroll")).toContainElement(
-      screen.getByTestId("perps-desk")
-    );
-    expect(screen.queryAllByRole("searchbox")).toHaveLength(0);
+    fireEvent.click(tabs()[LEVERAGE]);
+    expect(screen.getByTestId("perps-desk")).toBeInTheDocument();
 
-    fireEvent.click(tabs()[SPOT]);
-    expect(screen.queryByTestId("perps-desk")).toBeNull();
+    for (const index of [SPOT, MEMES, RWA]) {
+      fireEvent.click(tabs()[index]);
+      expect(screen.queryByTestId("perps-desk")).toBeNull();
+    }
   });
 
-  // The home page's "Own the Market" banner links here with ?tab=perps.
-  it("opens on the Leverage tab when the link names it", () => {
+  // An "Own the Market" link carries ?tab=perps, and the tab is offered again,
+  // so the link opens the desk instead of falling back to Spot.
+  it("opens the Leverage tab from a ?tab=perps link", () => {
     search.query = "tab=perps";
     try {
       renderView();
-      expect(tabs()[PERPS]).toHaveAttribute("aria-selected", "true");
+      expect(tabs()[LEVERAGE]).toHaveAttribute("aria-selected", "true");
       expect(screen.getByTestId("perps-desk")).toBeInTheDocument();
+    } finally {
+      search.query = "";
+    }
+  });
+
+  // The fallback itself still has to work, so it keeps a case of its own with
+  // a tab id that names nothing at all. Without this, emptying HIDDEN_TABS
+  // would have quietly removed the only test covering it.
+  it("falls back to Spot when the link names a tab that does not exist", () => {
+    search.query = "tab=nonsense";
+    try {
+      renderView();
+      expect(tabs()[SPOT]).toHaveAttribute("aria-selected", "true");
     } finally {
       search.query = "";
     }
@@ -478,21 +515,24 @@ describe("MobileMarketView chrome", () => {
     const panel = screen.getByRole("tabpanel");
     expect(panel).toHaveAccessibleName("Spot");
 
-    fireEvent.click(tabs()[PERPS]);
-    expect(screen.getByRole("tabpanel")).toHaveAccessibleName("Leverage");
-    expect(screen.getByTestId("perps-desk")).toBeInTheDocument();
+    fireEvent.click(tabs()[MEMES]);
+    expect(screen.getByRole("tabpanel")).toHaveAccessibleName("Memecoins");
   });
 
   it("moves selection with arrow keys and Home/End, not with Tab", () => {
     renderView();
+    // One seat to the right of Spot is Leverage again, now that the strip is
+    // dealt in full.
     fireEvent.keyDown(tabs()[SPOT], { key: "ArrowRight" });
-    expect(tabs()[PERPS]).toHaveAttribute("aria-selected", "true");
+    expect(tabs()[LEVERAGE]).toHaveAttribute("aria-selected", "true");
 
-    fireEvent.keyDown(tabs()[PERPS], { key: "End" });
+    // End reaches Prediction, which is its own product route rather than a
+    // panel here: the strip hands off and the selection stays where it was.
+    fireEvent.keyDown(tabs()[LEVERAGE], { key: "End" });
     expect(router.push).toHaveBeenCalledWith("/prediction");
-    expect(tabs()[PERPS]).toHaveAttribute("aria-selected", "true");
+    expect(tabs()[LEVERAGE]).toHaveAttribute("aria-selected", "true");
 
-    fireEvent.keyDown(tabs()[PERPS], { key: "Home" });
+    fireEvent.keyDown(tabs()[LEVERAGE], { key: "Home" });
     expect(tabs()[SPOT]).toHaveAttribute("aria-selected", "true");
 
     // Wrapping backwards from the first tab opens Prediction's own route.
@@ -1243,7 +1283,7 @@ describe("MobileMarketView, the memecoin Trending strip and screener", () => {
     expect(before(toolbar, rowFor("PEPE"))).toBe(true);
     expect(within(toolbar).getByRole("group", { name: "Time window" })).toBeInTheDocument();
 
-    fireEvent.click(tabs()[PERPS]);
+    fireEvent.click(tabs()[SPOT]);
     expect(region("trending")).toBeNull();
     expect(region("screener-toolbar")).toBeNull();
   });

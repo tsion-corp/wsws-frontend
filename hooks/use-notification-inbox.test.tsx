@@ -8,12 +8,16 @@ import { isPersistedKey } from "@/lib/query-persist";
 const apiFetch = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/api", () => ({ apiFetch }));
 
-const privy = vi.hoisted(() => ({
+const session = vi.hoisted(() => ({
   ready: true,
   authenticated: true,
-  user: { id: "did:privy:alice" } as { id: string } | null,
+  userId: "did:privy:alice" as string | null,
+  evmAddress: null as string | null,
+  solanaAddress: null as string | null,
+  profile: { name: "u", email: "", avatarSeed: "u" },
+  logout: async () => {},
 }));
-vi.mock("@privy-io/react-auth", () => ({ usePrivy: () => privy }));
+vi.mock("@/hooks/use-auth-session", () => ({ useAuthSession: () => session }));
 
 import { notificationInboxKey, useNotificationInbox } from "@/hooks/use-notification-inbox";
 
@@ -79,9 +83,9 @@ describe("useNotificationInbox", () => {
     apiFetch.mockReset();
     workerListeners.clear();
     installServiceWorkerStub();
-    privy.ready = true;
-    privy.authenticated = true;
-    privy.user = { id: ALICE };
+    session.ready = true;
+    session.authenticated = true;
+    session.userId = ALICE;
   });
 
   afterEach(() => {
@@ -253,7 +257,7 @@ describe("useNotificationInbox", () => {
     await waitFor(() => expect(result.current.items).toHaveLength(1));
     expect(client.getQueryData(notificationInboxKey(ALICE))).toBeTruthy();
 
-    privy.user = { id: BOB };
+    session.userId = BOB;
     rerender();
 
     await waitFor(() => expect(client.getQueryData(notificationInboxKey(ALICE))).toBeUndefined());
@@ -264,8 +268,8 @@ describe("useNotificationInbox", () => {
     const { result, rerender } = renderHook(() => useNotificationInbox(), { wrapper });
     await waitFor(() => expect(result.current.items).toHaveLength(1));
 
-    privy.user = null;
-    privy.authenticated = false;
+    session.userId = null;
+    session.authenticated = false;
     rerender();
 
     await waitFor(() => expect(client.getQueryData(notificationInboxKey(ALICE))).toBeUndefined());
@@ -273,8 +277,8 @@ describe("useNotificationInbox", () => {
   });
 
   it("asks for nothing while there is no signed-in account", async () => {
-    privy.user = null;
-    privy.authenticated = false;
+    session.userId = null;
+    session.authenticated = false;
     const { result } = renderHook(() => useNotificationInbox(), { wrapper });
 
     await act(async () => {});

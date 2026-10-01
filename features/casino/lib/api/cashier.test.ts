@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import { apiError } from "@/lib/api/envelope";
 import {
+  cashierFundingPlan,
   cashierLockBuckets,
+  cashierTotalUsdc,
   chessComputerWagerBreakdown,
   computerWagerBreakdown,
   exceedsUsdcBalance,
@@ -243,6 +245,32 @@ describe("exceedsUsdcBalance", () => {
   });
 });
 
+describe("cashierFundingPlan", () => {
+  it("uses an existing chess balance without touching the wallet", () => {
+    expect(cashierFundingPlan("0.05", "0.07", "1")).toEqual({
+      depositUsdc: "0",
+      totalAvailableUsdc: "1.07",
+      sufficient: true,
+    });
+  });
+
+  it("funds only the ledger shortfall", () => {
+    expect(cashierFundingPlan("0.1", "0.07", "0.04")).toEqual({
+      depositUsdc: "0.03",
+      totalAvailableUsdc: "0.11",
+      sufficient: true,
+    });
+  });
+
+  it("reports when the ledger and wallet combined cannot cover the stake", () => {
+    expect(cashierFundingPlan("1", "0.2", "0.3")).toEqual({
+      depositUsdc: "0.8",
+      totalAvailableUsdc: "0.5",
+      sufficient: false,
+    });
+  });
+});
+
 describe("feePctFromBps", () => {
   it("derives the display percentage from basis points", () => {
     expect(feePctFromBps(500)).toBe(5);
@@ -290,6 +318,19 @@ describe("cashierLockBuckets", () => {
       pendingWithdrawalUsdc: "0",
       lockedOtherUsdc: "0",
     });
+  });
+});
+
+describe("cashierTotalUsdc", () => {
+  it("combines available and locked funds instead of trusting a stale total", () => {
+    expect(
+      cashierTotalUsdc({
+        player: "0xabc",
+        availableUsdc: "0.07",
+        lockedUsdc: "0.01062",
+        totalUsdc: "0",
+      })
+    ).toBe("0.08062");
   });
 });
 

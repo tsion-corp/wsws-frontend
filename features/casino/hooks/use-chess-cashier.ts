@@ -1,10 +1,11 @@
 "use client";
+import { useAuthSession } from "@/hooks/use-auth-session";
 
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { usePrivy } from "@privy-io/react-auth";
 import {
   cashierLockBuckets,
+  cashierTotalUsdc,
   confirmChessDeposit,
   createChessWithdrawal,
   feePctFromBps,
@@ -17,8 +18,9 @@ import {
   type CashierWithdrawal,
 } from "@/features/casino/lib/api/cashier";
 import { useSendToken } from "@/hooks/use-withdraw";
-import { getWalletAddress } from "@/lib/user";
+
 import { toBaseUnits } from "@/lib/trade/math";
+import { track } from "@/lib/analytics/mixpanel";
 
 // The chess cashier's balance and money movements. Everything hangs off the
 // config query: while the service reports the cashier unconfigured, nothing
@@ -41,9 +43,11 @@ export const CASHIER_BALANCE_POLL_MS = 2 * 60_000;
 
 // The service wants the deposit transfer at its confirmation depth before it
 // credits, so the first confirm right after the send can legitimately fail.
-// Four tries three seconds apart cover Base's confirmation time comfortably.
+// The sponsored send already waits for an on-chain receipt. Confirmation can
+// still lag briefly between RPC providers, so retry promptly instead of
+// making the user sit through a three-second blind wait each time.
 const CONFIRM_ATTEMPTS = 4;
-const CONFIRM_DELAY_MS = 3_000;
+const CONFIRM_DELAY_MS = 1_000;
 
 const NETWORK = "base-mainnet";
 
@@ -67,8 +71,9 @@ export interface ChessDepositOutcome {
 // mount; it touches no wallet SDK, so it is safe on screens that never move
 // money.
 export function useChessCashierStatus() {
-  const { user, ready, authenticated } = usePrivy();
-  const wallet = getWalletAddress(user, "ethereum");
+  const { ready, authenticated, evmAddress, solanaAddress, profile } = useAuthSession();
+  const addressFor = (chain: string) => (chain === "solana" ? solanaAddress : evmAddress);
+  const wallet = evmAddress;
 
   const config = useQuery({
     queryKey: CASHIER_KEYS.config,
@@ -109,9 +114,10 @@ export function useChessCashierStatus() {
     feePct: config.data ? feePctFromBps(config.data.platformFeeBps) : null,
     available: balance.data?.availableUsdc ?? "0",
     locked: balance.data?.lockedUsdc ?? "0",
-    total: balance.data?.totalUsdc ?? "0",
+    total: cashierTotalUsdc(balance.data),
     lockBuckets: cashierLockBuckets(balance.data),
     balanceLoading: enabled && balance.isLoading,
+    balanceError: balance.isError,
   };
 }
 
@@ -146,7 +152,9 @@ export function useChessCashierWithdrawal() {
 // the embedded wallet, so this hook mounts the wallet SDK; only cashier
 // surfaces (the sheet) should use it, everything else reads
 // useChessCashierStatus.
-export function useChessCashier() {
+export function useChessCashier({
+  onDepositSent,
+}: { onDepositSent?: (txHash: string) => void } = {}) {
   const queryClient = useQueryClient();
   const status = useChessCashierStatus();
   const { sendToken } = useSendToken();
@@ -175,6 +183,9 @@ export function useChessCashier() {
           amount: toBaseUnits(amountUsdc, USDC_DECIMALS),
         });
 
+        // Callers can retain the transfer before confirmation fails or times out.
+        onDepositSent?.(txHash);
+
         setDepositPhase("confirming");
         for (let attempt = 0; attempt < CONFIRM_ATTEMPTS; attempt++) {
           if (attempt > 0) await wait(CONFIRM_DELAY_MS);
@@ -193,6 +204,12 @@ export function useChessCashier() {
         setDepositPhase("idle");
       }
     },
+    onSuccess: (outcome, amountUsdc) => {
+      // The money reached the cashier either way: a late credit is the
+      // service acknowledging slowly, not a failed move. The credited figure
+      // is preferred when there is one, since that is what actually landed.
+      track("arkade_balance_funded", { amount_usd: Number(outcome.credited ?? amountUsdc) });
+    },
     onSettled: invalidateBalance,
   });
 
@@ -201,7 +218,10 @@ export function useChessCashier() {
       if (!wallet) throw new Error("Connect your wallet first.");
       return createChessWithdrawal(wallet, amountUsdc);
     },
-    onSuccess: invalidateBalance,
+    onSuccess: (_withdrawal, amountUsdc) => {
+      track("arkade_balance_withdrawn", { amount_usd: Number(amountUsdc) });
+      invalidateBalance();
+    },
   });
 
   return {

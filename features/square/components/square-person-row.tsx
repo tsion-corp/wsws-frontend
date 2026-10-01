@@ -3,10 +3,11 @@
 import { useState } from "react";
 import { useTranslations } from "next-intl";
 import { useMutation } from "@tanstack/react-query";
+import { track } from "@/lib/analytics/mixpanel";
 import { setFollow, type SquareSearchProfile } from "@/lib/api/market-square";
 import { squareLinks } from "@/lib/square/links";
 import { cn } from "@/lib/utils";
-import { SquareAvatar } from "@/features/square/components/square-avatar";
+import { SquareAvatar } from "@/components/ui/square-avatar";
 import {
   OrgBadgeChip,
   RoleChip,
@@ -43,6 +44,13 @@ export function SquarePersonRow({
     onMutate: (next) => {
       const previous = following;
       setFollowing(next);
+      // `source` is where the button was pressed, which is what says which
+      // surface actually grows the graph.
+      const targetId = profile.id;
+      if (targetId) {
+        if (next) track("user_followed", { target_user_id: targetId, source: "person_row" });
+        else track("user_unfollowed", { target_user_id: targetId });
+      }
       return { previous };
     },
     onError: (_error, _next, context) => setFollowing(context?.previous ?? false),
@@ -85,12 +93,7 @@ export function SquarePersonRow({
   return (
     <div className="flex items-center gap-2 px-4 py-3 sm:gap-[9px]">
       {href ? (
-        <a
-          href={href}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="flex min-w-0 flex-1 items-center gap-[9px]"
-        >
+        <a href={href} className="flex min-w-0 flex-1 items-center gap-[9px]">
           {identity}
         </a>
       ) : (
@@ -99,8 +102,6 @@ export function SquarePersonRow({
       {!isMe && href ? (
         <a
           href={href}
-          target="_blank"
-          rel="noopener noreferrer"
           aria-label={t("winkAt", { name })}
           className="ws-pressable flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-white/20 text-[#d4d4d8] transition-colors hover:bg-white/10 hover:text-[#fafafa]"
         >

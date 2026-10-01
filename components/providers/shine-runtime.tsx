@@ -2,7 +2,7 @@
 
 import { useEffect } from "react";
 import { useTranslations } from "next-intl";
-import { usePrivy } from "@privy-io/react-auth";
+import { useAuthSession } from "@/hooks/use-auth-session";
 import { useShine } from "@/hooks/use-shine";
 import { configureShine } from "@/lib/shine";
 
@@ -34,13 +34,19 @@ import { configureShine } from "@/lib/shine";
 /**
  * Installs the Shine runtime for the signed-in session. Renders nothing.
  *
- * Mounted inside the Privy provider, the query client and the next-intl
- * provider, because it needs the account, the account's preferences and the
- * author's catalogue.
+ * Mounted inside DecaneKit, the query client and the next-intl provider,
+ * because it needs the account, the account's preferences and the author's
+ * catalogue.
+ *
+ * `paused` holds every post back whatever the preferences say. The session
+ * providers pass the account-upgrade state here (features/migrate's
+ * ShineRuntimeUnderMigration), which this file may not read itself: a post
+ * made under a Decane id whose old Square profile is not linked yet would
+ * make the Square's empty placeholder profile somebody's account and split
+ * the person for good. This layer knows nothing of that; it only pauses.
  */
-export function ShineRuntimeProvider() {
-  const { user } = usePrivy();
-  const accountDid = user?.id ?? null;
+export function ShineRuntimeProvider({ paused = false }: { paused?: boolean }) {
+  const { userId: accountDid } = useAuthSession();
   const { mayPost } = useShine();
   // Namespaced at `shine.post`: the composer names keys below it and nothing
   // else, so this hands over the thirteen sentences and none of the UI copy.
@@ -54,10 +60,10 @@ export function ShineRuntimeProvider() {
     // re-running does not starve a post that is mid-flight.
     configureShine({
       accountDid,
-      isEnabled: (service) => mayPost(service),
+      isEnabled: (service) => !paused && mayPost(service),
       translate: (key, values) => t(key, values),
     });
-  }, [accountDid, mayPost, t]);
+  }, [accountDid, mayPost, paused, t]);
 
   // Teardown belongs to unmount alone, not to every re-install above.
   // `configureShine(null)` drops the queue, and doing that on an ordinary

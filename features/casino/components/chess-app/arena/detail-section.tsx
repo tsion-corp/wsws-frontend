@@ -1,9 +1,9 @@
 "use client";
+import { useAuthSession } from "@/hooks/use-auth-session";
 
 import { useEffect, useRef } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { usePrivy } from "@privy-io/react-auth";
 import { CasinoError, CasinoLoading } from "@/features/casino/components/casino-state";
 import {
   ArenaClock,
@@ -16,6 +16,7 @@ import type { ArenaDetail, ArenaPairing, ArenaStanding } from "@/features/casino
 import { copyText } from "@/lib/clipboard";
 import { friendlyError } from "@/lib/errors";
 import { toast } from "@/lib/toast";
+import { useShareLink } from "@/hooks/use-share-link";
 
 function gameHref(matchId: string, playerName: string): string {
   return `/casino/chess/play?match=${encodeURIComponent(matchId)}&player=${encodeURIComponent(playerName)}`;
@@ -353,7 +354,8 @@ export function ArenaDetailSection({
   showCreatedShare?: boolean;
 }) {
   const router = useRouter();
-  const { login } = usePrivy();
+  const { ready, authenticated, evmAddress, solanaAddress, profile } = useAuthSession();
+  const login = () => router.push("/auth");
   const wallet = useCasinoWallet();
   const arena = useArenaTournament(arenaId);
   const redirectedPairing = useRef<string | null>(null);
@@ -419,8 +421,10 @@ export function ArenaDetailSection({
     }
   };
 
+  const shareLink = useShareLink();
+
   const share = async () => {
-    const ok = await copyText(window.location.href.split("?")[0]);
+    const ok = await copyText(shareLink(window.location.href.split("?")[0]));
     if (ok) toast.success("Arena link copied.");
   };
 

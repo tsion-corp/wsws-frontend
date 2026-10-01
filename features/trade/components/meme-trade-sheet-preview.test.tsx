@@ -3,6 +3,7 @@ import { NextIntlClientProvider } from "next-intl";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import messages from "@/messages/en.json";
 import { memeToken } from "@/lib/meme/fixture";
+import { TradeApiError } from "@/lib/meme/api";
 
 const WALLET = "0xabc0000000000000000000000000000000000001";
 const state = vi.hoisted(() => ({ phase: "idle" as string }));
@@ -14,7 +15,7 @@ const useMemePreview = vi.hoisted(() =>
     ) => {
       quote: null;
       expired: boolean;
-      error: null;
+      error: unknown;
       isFetching: boolean;
       refetch: () => void;
     }
@@ -34,7 +35,7 @@ vi.mock("@/features/trade/hooks/use-meme-trade", async (importOriginal) => ({
     requestId: null,
     trade: vi.fn(),
     reset: vi.fn(),
-    linkForPreview: vi.fn(),
+    linkForPreview: vi.fn(async () => {}),
   }),
 }));
 vi.mock("@/features/trade/hooks/use-meme-tokens", () => ({
@@ -67,8 +68,18 @@ vi.mock("@/hooks/use-portfolio", () => ({
 vi.mock("@/hooks/use-withdraw", () => ({ useReroutedWithdraw: () => ({ withdraw: vi.fn() }) }));
 vi.mock("@privy-io/react-auth", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@privy-io/react-auth")>()),
-  usePrivy: () => ({ user: { id: "did:privy:u1" } }),
   getAccessToken: vi.fn(async () => "token"),
+}));
+// The sheet reads the signed-in account through the Decane-backed session seam.
+vi.mock("@/hooks/use-auth-session", () => ({
+  useAuthSession: () => ({
+    ready: true,
+    authenticated: true,
+    evmAddress: WALLET,
+    solanaAddress: null,
+    profile: { name: "u1", email: "", avatarSeed: "did:privy:u1" },
+    logout: vi.fn(),
+  }),
 }));
 vi.mock("@/lib/analytics/mixpanel", () => ({ track: vi.fn() }));
 
@@ -129,5 +140,37 @@ describe("MemeTradeSheet preview while a trade is in flight", () => {
       </NextIntlClientProvider>
     );
     expect(lastPreviewInput()).toBeNull();
+  });
+
+  // Reported 2026-09-19: the refusal stayed on screen while the sale ran.
+  it("drops the preview's last refusal once the trade is running", async () => {
+    state.phase = "idle";
+    useMemePreview.mockReturnValue({
+      quote: null,
+      expired: false,
+      error: new TradeApiError("WALLET_OWNERSHIP_MISMATCH", "not linked", 403),
+      isFetching: false,
+      refetch: vi.fn(),
+    });
+    const { getByRole, queryByText, rerender } = renderSheet();
+    await act(async () => {
+      fireEvent.change(getByRole("textbox"), { target: { value: "5" } });
+      await vi.advanceTimersByTimeAsync(700);
+    });
+    const refusal = messages.tradeErrors.walletOwnershipMismatch;
+    expect(queryByText(new RegExp(refusal.slice(0, 30), "i"))).not.toBeNull();
+
+    state.phase = "quoting";
+    rerender(
+      <NextIntlClientProvider locale="en" messages={messages}>
+        <MemeTradeSheet
+          token={memeToken({ symbol: "AAA" })}
+          onClose={() => {}}
+          defaultSide="SELL"
+        />
+      </NextIntlClientProvider>
+    );
+
+    expect(queryByText(new RegExp(refusal.slice(0, 30), "i"))).toBeNull();
   });
 });

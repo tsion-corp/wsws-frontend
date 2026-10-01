@@ -24,9 +24,8 @@ import { BalanceCarousel } from "@/features/portfolio/components/balance-carouse
 import Link from "next/link";
 import { PromoCarousel } from "@/components/ui/promo-deck";
 import { PromoBanner, PromoRail } from "@/components/ui/promo-rail";
-import { ARKSTORE_URL } from "@/lib/brand";
+import { ARKSTORE_URL, BRAND } from "@/lib/brand";
 import { marketSquareHref } from "@/lib/market-square";
-import { GetKashBanner } from "@/features/portfolio/components/get-kash-banner";
 import { SetTheStakeBanner } from "@/features/portfolio/components/set-the-stake-banner";
 import { ArkStoreBanner } from "@/features/portfolio/components/ark-store-banner";
 import { KashBuyModal } from "@/features/portfolio/components/kash-buy-modal";
@@ -49,7 +48,7 @@ import { SearchIcon, WalletIcon } from "@/components/ui/icons";
 import { usePortfolio, type TokenBalance } from "@/hooks/use-portfolio";
 import {
   isUnpricedHolding,
-  isZeroValueHolding,
+  isSmallBalance,
   memeTokenOf,
   selectHoldings,
   withoutServiceKnownMemes,
@@ -68,6 +67,14 @@ interface PortfolioViewProps {
   /** Replays the walkthrough; owned by the route, wired into the balance card. */
   onTakeTour: () => void;
   crossBorderSlot: ReactNode;
+  /** The migration's sweep button, and whether to hide the figure while the
+      money is still in the old wallet. Both owned by the route: they belong to
+      another feature, and features never import each other. */
+  updateBalanceSlot?: ReactNode;
+  /** The Arkade campaign banner, above the balance row. Owned by the route
+      for the same reason: it belongs to the casino feature. */
+  campaignSlot?: ReactNode;
+  maskForMigration?: boolean;
   onOpenDetail: (detail: DetailPayload) => void;
   onOpenBuy: (buy: BuyPayload) => void;
   onOpenSell: (sell: SellPayload) => void;
@@ -86,6 +93,9 @@ export function PortfolioView({
   onOpenFunds,
   onOpenWithdraw,
   onTakeTour,
+  updateBalanceSlot,
+  campaignSlot,
+  maskForMigration,
   // crossBorderSlot is unused while the section below is commented out.
   onOpenDetail,
   onOpenBuy,
@@ -102,6 +112,7 @@ export function PortfolioView({
   const router = useRouter();
   const t = useTranslations("portfolio");
   const tDiscovery = useTranslations("discovery");
+  const tBns = useTranslations("bns");
   const { wallet: kashWallet } = useKashAccount();
   const claimPoints = useKashClaim();
   const [kashModal, setKashModal] = useState<
@@ -120,12 +131,13 @@ export function PortfolioView({
 
   // The table shows bought assets only, so drop the USDC-on-Base deposit float
   // first (see selectHoldings). Then, when hideZero is on, drop rows with no real
-  // value — the always-present USDC/USDT/native baseline (shown at $0) plus dust
-  // that rounds to $0.00. A held balance we could not price is not zero-value and
-  // survives the toggle; see isZeroValueHolding.
+  // value: the always-present USDC/USDT/native baseline (shown at $0) and the
+  // unsolicited tokens worth a fraction of a cent that anyone can send to any
+  // address. A held balance we could not price survives the toggle, since its
+  // value is unknown rather than nothing. See isSmallBalance.
   const visibleTokens = useMemo(() => {
     const holdings = withoutServiceKnownMemes(selectHoldings(tokens), servicePositions);
-    return hideZero ? holdings.filter((t) => !isZeroValueHolding(t)) : holdings;
+    return hideZero ? holdings.filter((t) => !isSmallBalance(t)) : holdings;
   }, [tokens, hideZero, servicePositions]);
 
   const table = useReactTable({
@@ -276,6 +288,22 @@ export function PortfolioView({
     </a>
   );
 
+  // Ark ID, second on both strips, right behind the store ticket. It used to be
+  // a card in the sidebar, which on a phone is a drawer nobody opens: the promo
+  // strip is the one surface every device actually shows. Pale fill and ink
+  // words so it reads as a name card rather than another coloured ticket, and
+  // so it carries in a rail of saturated ones.
+  const arkIdBanner = (
+    <PromoBanner
+      href="/ark-id"
+      title={tBns("promoTitle", { brand: BRAND })}
+      subtitle={tBns("promoSubtitle")}
+      background="#EDEDED"
+      tone="on-light"
+      glyph="/market/promo-ark-id-at.svg"
+    />
+  );
+
   // The stake banner, and the third rail stop it used to fill on its own. With
   // the square switched off there is still no Market Square banner, so it
   // repeats as it always did and the carousel keeps something to move to.
@@ -286,7 +314,6 @@ export function PortfolioView({
       subtitle={tDiscovery("stakeSubtitle")}
       background="#ed2b07"
       glyph="/market/promo-stake-flame.svg"
-      scallop="/market/promo-stake-scallop.svg"
       art={[
         {
           src: "/market/promo-stake-glow-left.svg",
@@ -329,14 +356,18 @@ export function PortfolioView({
       {/* Phone head: swipe carousel of the two starfield cards, then the promo
           strip. The carousel gives the h-full cards their height. */}
       <div className="md:hidden">
+        {campaignSlot ? <div className="mb-3">{campaignSlot}</div> : null}
         <BalanceCarousel>
           <BalanceCard
             onOpenFunds={onOpenFunds}
             onOpenWithdraw={onOpenWithdraw}
             onTakeTour={onTakeTour}
+            updateBalanceSlot={updateBalanceSlot}
+            maskForMigration={maskForMigration}
           />
           <KashCardMobile
             onBuy={() => setKashModal("buy")}
+            onSend={() => setKashModal("send")}
             onConvert={() => setKashModal("convert")}
             onHistory={() => setKashModal("history")}
           />
@@ -346,6 +377,7 @@ export function PortfolioView({
         <div className="mt-3">
           <PromoCarousel>
             {arkStoreBanner}
+            {arkIdBanner}
             {/* The ticket is presentational; the doorway to the casino lives
                 here at the composition site. Embla suppresses the click after a
                 drag, so a tap navigates and a swipe still pages the deck. */}
@@ -356,21 +388,27 @@ export function PortfolioView({
             >
               <SetTheStakeBanner />
             </Link>
-            <GetKashBanner onBuy={() => setKashModal("buy")} />
+            {/* The same banner the desk shows, not a flat export of it: its
+                words are real text in the app's own faces, and they translate. */}
+            <KashBanner onBuy={() => setKashModal("buy")} />
             {squareBanner}
           </PromoCarousel>
         </div>
       </div>
 
       {/* Desktop: the side-by-side grid. */}
+      {campaignSlot ? <div className="mb-3 hidden md:block">{campaignSlot}</div> : null}
       <div className="hidden gap-3 md:grid lg:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)] xl:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)]">
         <BalanceCard
           onOpenFunds={onOpenFunds}
           onOpenWithdraw={onOpenWithdraw}
           onTakeTour={onTakeTour}
+          updateBalanceSlot={updateBalanceSlot}
+          maskForMigration={maskForMigration}
         />
         <KashCard
           onBuy={() => setKashModal("buy")}
+          onSend={() => setKashModal("send")}
           onClaim={
             kashWallet
               ? () =>
@@ -398,6 +436,7 @@ export function PortfolioView({
       <div className="mt-3 hidden md:block">
         <PromoRail label={tDiscovery("promoRailCarousel")}>
           {arkStoreBanner}
+          {arkIdBanner}
           {stakeBanner}
           <KashBanner onBuy={() => setKashModal("buy")} />
           {squareBanner ?? stakeBanner}
@@ -465,7 +504,7 @@ export function PortfolioView({
               <span className="ws-display text-[22px]">{t("yourHoldings")}</span>
               <div className="flex items-center gap-3">
                 <div className="flex items-center gap-2 text-[12.5px] font-normal whitespace-nowrap text-white/60">
-                  <span>{t("hideZeroValue")}</span>
+                  <span>{t("hideSmallBalances")}</span>
                   <Switch
                     size="sm"
                     checked={hideZero}

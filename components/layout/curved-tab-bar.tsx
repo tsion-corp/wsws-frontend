@@ -2,9 +2,11 @@
 
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { useRouter } from "next/navigation";
+import { guardNavigation } from "@/lib/navigation-guard";
 import { ClockIcon } from "@/components/ui/icons";
 import type { SectionId } from "@/lib/sections";
 import type { NavItem } from "@/components/layout/nav-items";
+import { openSquareZone } from "@/lib/square-zone";
 
 // The five icons, lifted straight from the Figma art (node 104:2688) so the
 // glyphs match the dome exactly. Each keeps the art's own coordinates as its
@@ -182,15 +184,27 @@ export function CurvedTabBar({ items, activeSection, onNavigate }: CurvedTabBarP
   const router = useRouter();
   const reduce = useReducedMotion();
 
+  // A screen may need to be asked before it is left. The seats that go through
+  // onNavigate are asked there, in useAppNavigate; these three route from here,
+  // so they ask for themselves. Either way there is no click for a listener to
+  // catch, which is why the question is asked in code rather than in the DOM.
   const onTap = (tab: Tab) => {
     if (tab.key === "portfolio") onNavigate("portfolio");
-    else if (tab.key === "market") router.push("/market");
-    // The Square seat opens the app's own Square page, exactly as the desktop
-    // rail's entry does; it used to open the Square's deployment in a new tab
-    // (ogazboiz, 2026-09-13). "Open the Square" on that page is the way out.
-    else if (tab.key === "square") router.push("/square");
-    else if (tab.key === "casino") onNavigate("casino");
-    else router.push("/activity");
+    else if (tab.key === "market") {
+      if (guardNavigation("/market")) return;
+      router.push("/market");
+    }
+    // The Square seat opens /square in this tab, exactly as the desktop rail's
+    // entry does. /square is the Square's own app now (lib/square-zone), so it
+    // is a full page load rather than a client transition.
+    else if (tab.key === "square") {
+      if (guardNavigation("/square")) return;
+      openSquareZone();
+    } else if (tab.key === "casino") onNavigate("casino");
+    else {
+      if (guardNavigation("/activity")) return;
+      router.push("/activity");
+    }
   };
 
   const activeTab = TABS.find((t) => t.section !== undefined && t.section === activeSection);

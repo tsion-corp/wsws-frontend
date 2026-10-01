@@ -15,8 +15,9 @@ import { reportUpstreamFailure } from "@/lib/analytics/watchtower";
 export interface ApiFetchOptions {
   // Throw a retryable error instead of firing a token-less request that 401s.
   requireAuth?: boolean;
-  // Which Privy identity signs the request. The distinction is retained for
-  // migration callers, while staging still runs on the Privy provider.
+  // Which identity signs the request: the app's (Decane) by default, or the
+  // OLD Privy identity for the migration flow's legacy calls. See
+  // lib/auth-token for the rules.
   identity?: AuthIdentity;
   // Send no credentials at all, for reads that are identical for everyone —
   // keeps them cacheable while still passing through the breaker below.
@@ -40,10 +41,13 @@ export async function authHeaders(
 // server can verify them, plus the Privy identity token when available so
 // routes can resolve the full user without an extra Privy API call.
 //
-// On a cold first load Privy can report "authenticated" before both tokens are
-// warm. Auth-gated staging routes need the access and identity tokens, so an
-// incomplete pair is never sent. A missing legacy session is not retryable:
-// the migration flow must ask the user to sign in to the old account.
+// On a cold first load the provider can report "authenticated" a moment before
+// the access token is warm, so the access token is briefly null. Callers of
+// auth-gated routes pass `requireAuth` so that, instead of firing a token-less
+// request that 401s, we throw a retryable error and let the caller's query
+// retry once the token lands. A legacy-identity call with no Privy session is
+// not retryable: it throws LegacySessionError so the flow can ask the user to
+// sign in to the old account.
 export async function apiFetch(
   path: string,
   init: RequestInit = {},
@@ -69,7 +73,10 @@ export async function apiFetch(
   // endpoint costing an invocation per poll.
   if (!opts.anonymous) {
     const { accessToken, idToken } = await resolveAuthTokens(identity);
-    if (opts.requireAuth && (!accessToken || !idToken)) {
+    // Bearer-only: a Decane session has no identity token, so requiring one
+    // would reject every migrated user. A legacy call with no Privy session is
+    // not retryable — the flow must ask the user to sign in to the old account.
+    if (opts.requireAuth && !accessToken) {
       if (identity === "legacy") throw new LegacySessionError();
       throw new Error("Auth not ready, retrying");
     }

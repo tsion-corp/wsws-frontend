@@ -1,13 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
-import { usePrivy } from "@privy-io/react-auth";
+import { useAuthSession } from "@/hooks/use-auth-session";
 import { useMoney } from "@/components/ui/currency-select";
 import { useBalanceVisibility } from "@/components/ui/balance-visibility";
-import { parseEther } from "viem";
 import { useVaultGame } from "@/features/casino/hooks/use-vault-game";
 import { useGameBalance } from "@/features/casino/hooks/use-game-balance";
 import { secondsUntil } from "@/features/casino/lib/last-standing/clock";
@@ -17,7 +16,7 @@ import {
   subscribeFollowedGame,
 } from "@/features/casino/lib/last-standing/followed-game";
 import { useVaultActions } from "@/features/casino/hooks/use-vault-actions";
-import { getWalletAddress } from "@/lib/user";
+import { usdToUnits } from "@/features/casino/lib/last-standing/stake";
 import { friendlyError } from "@/lib/errors";
 import { toast } from "@/lib/toast";
 
@@ -54,7 +53,7 @@ interface DocumentPictureInPictureApi {
 
 type PipTier = "document" | "video" | "overlay";
 
-function detectTier(): PipTier | null {
+export function detectTier(): PipTier | null {
   if (typeof window === "undefined") return null;
   const videoCapable =
     typeof document !== "undefined" &&
@@ -116,6 +115,26 @@ function subscribe(listener: () => void): () => void {
 }
 
 const getSnapshot = () => state;
+/** The pop-out's current state, for callers outside the React tree. */
+export function miniWindowSnapshot(): MiniWindowState {
+  return state;
+}
+/**
+ * Subscribes to that state. Exported for the arena's own pop-out switch, which
+ * has to show whether the window is up: it says "Pop-out timer" when it is not
+ * and "Close pop-out" when it is, and only this store knows which.
+ *
+ * `setState` replaces the object on every change, so this pairs safely with
+ * `miniWindowSnapshot` in `useSyncExternalStore` — the identity is stable
+ * between changes and different across them, which is what it checks.
+ */
+export function subscribeMiniWindow(listener: () => void): () => void {
+  return subscribe(listener);
+}
+/** True while any tier is up — a real window, a floating video, or the overlay. */
+export function isMiniWindowOpen(s: MiniWindowState): boolean {
+  return s.pipWindow !== null || s.videoActive || s.overlayActive;
+}
 const getServerSnapshot = () => state;
 
 function useMiniWindow(): MiniWindowState {
@@ -148,7 +167,7 @@ function copyStylesInto(target: Window): void {
 async function openDocumentPip(): Promise<void> {
   const api = (window as Window & { documentPictureInPicture?: DocumentPictureInPictureApi })
     .documentPictureInPicture;
-  if (!api) return;
+  if (!api) throw new Error("this browser has no document picture-in-picture");
   const win = await api.requestWindow({ width: 300, height: 310 });
   copyStylesInto(win);
   win.document.body.style.background = "#101013";
@@ -184,7 +203,7 @@ function teardownVideoSurface(): void {
 const VIDEO_OPEN_TIMEOUT_MS = 3_000;
 
 async function openVideoPip(): Promise<void> {
-  if (!surfaces) return;
+  if (!surfaces) throw new Error("the video surfaces are not mounted");
   const { canvas, video } = surfaces;
   // A previous session may still be winding down; finish leaving before
   // asking again, or the request races the exit and loses.
@@ -277,7 +296,7 @@ function stopKeepAliveAudio(): void {
   keepAlive = null;
 }
 
-function closeMiniWindow(): void {
+export function closeMiniWindow(): void {
   state.pipWindow?.close();
   if (document.pictureInPictureElement) {
     // The leavepictureinpicture handler tears the stream down.
@@ -289,100 +308,30 @@ function closeMiniWindow(): void {
   setState({ pipWindow: null, videoActive: false, overlayActive: false });
 }
 
-// ---------------------------------------------------------------------------
-// The button, rendered inside the arena. Pure trigger: the floating window it
-// opens lives in MiniTimerHost and survives this button unmounting.
-
-const HINT_STORAGE_KEY = "ws-last-standing-mini-hint";
-const hintSeen = () =>
-  typeof window === "undefined" || localStorage.getItem(HINT_STORAGE_KEY) === "1";
-
-export function MiniTimerLauncher() {
-  const t = useTranslations("casino.lastStanding");
-  const tier = useSyncExternalStore(subscribe, detectTier, () => null);
-  const { pipWindow, videoActive, overlayActive } = useMiniWindow();
-  const open = pipWindow !== null || videoActive || overlayActive;
-
-  // One-time hint: nobody discovers picture-in-picture from a pill label
-  // alone, and without expectation-setting the fullscreen behaviour reads as
-  // a bug. Shown until the button is used once or the hint is dismissed.
-  const seen = useSyncExternalStore(subscribe, hintSeen, () => true);
-  const [hintDismissed, setHintDismissed] = useState(false);
-  const dismissHint = () => {
-    localStorage.setItem(HINT_STORAGE_KEY, "1");
-    setHintDismissed(true);
-  };
-
-  const toggle = useCallback(() => {
-    localStorage.setItem(HINT_STORAGE_KEY, "1");
-    setHintDismissed(true);
-    if (open) {
-      closeMiniWindow();
-      return;
-    }
-    // Ask inside the click that opens the pop-out: no Chromium window can
-    // float over another app's fullscreen Space on macOS, and the
-    // critical-clock notification is what reaches the player there.
-    if (typeof Notification !== "undefined" && Notification.permission === "default") {
-      void Notification.requestPermission();
-    }
-    if (tier === "document") {
-      void openDocumentPip().catch(() => {
-        setState({ pipWindow: null });
-        toast.error(t("miniFailed"));
-      });
-    } else if (tier === "video") {
-      void openVideoPip().catch(() => {
-        // The floating video can be refused (power saving, browser policy).
-        // The in-app overlay always works, so fall back to it instead of a
-        // dead error toast.
-        setState({ videoActive: false, overlayActive: true });
-      });
-    } else {
-      // In-app overlay: nothing to request, nothing that can fail.
-      setState({ overlayActive: true });
-    }
-  }, [open, tier, t]);
-
-  if (tier === null) return null;
-
-  // On a phone the hint is pinned to the viewport (a bottom snackbar), not to
-  // this button: the button can sit anywhere across the card, and a popover
-  // hanging off its right edge clips at the screen edge no matter how its
-  // width is capped. From sm: up there is room, so it anchors under the
-  // button like a normal popover.
-  const showHint = !seen && !hintDismissed && !open;
-
-  return (
-    <div className="relative">
-      <button
-        type="button"
-        onClick={toggle}
-        aria-pressed={open}
-        className="flex h-8 shrink-0 cursor-pointer items-center gap-1.5 rounded-full border border-white/12 bg-white/5 px-3 text-[11.5px] font-medium text-white/60 transition-colors hover:bg-white/10 hover:text-white"
-      >
-        <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
-          <path d="M3 5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v6h-2V5H5v14h6v2H5a2 2 0 0 1-2-2V5Zm10 8a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1h-6a1 1 0 0 1-1-1v-6Z" />
-        </svg>
-        {open ? t("miniClose") : t("miniOpen")}
-      </button>
-      {showHint ? (
-        <div className="fixed inset-x-4 bottom-[max(1rem,env(safe-area-inset-bottom))] z-30 rounded-[12px] border border-white/12 bg-[#1a1a1f] p-3 shadow-[0_12px_32px_rgba(0,0,0,0.5)] sm:absolute sm:inset-x-auto sm:top-full sm:right-0 sm:bottom-auto sm:mt-2 sm:w-[min(248px,calc(100vw-3rem))]">
-          <div className="text-[12px] leading-[1.5] font-medium text-white/85">
-            {t("miniHintTitle")}
-          </div>
-          <p className="mt-1 text-[11.5px] leading-[1.5] text-white/55">{t("miniHintBody")}</p>
-          <button
-            type="button"
-            onClick={dismissHint}
-            className="mt-2 cursor-pointer text-[11.5px] font-semibold text-white/70 hover:text-white"
-          >
-            {t("miniHintDismiss")}
-          </button>
-        </div>
-      ) : null}
-    </div>
-  );
+/**
+ * Raises the pop-out on the best tier this browser allows.
+ *
+ * Must be called inside a user gesture: both picture-in-picture APIs require
+ * one. The in-app overlay does not, which is why it is the fallback that can
+ * never fail.
+ */
+export function openMiniWindow(tier: PipTier | null, onFail?: () => void): void {
+  if (tier === "document") {
+    void openDocumentPip().catch(() => {
+      // A refused window used to leave the player with nothing. The overlay is
+      // the floor: worse than a floating window, far better than silence.
+      setState({ pipWindow: null, overlayActive: true });
+      onFail?.();
+    });
+  } else if (tier === "video") {
+    void openVideoPip().catch(() => {
+      // The floating video can be refused (power saving, browser policy). The
+      // in-app overlay always works, so fall back to it rather than failing.
+      setState({ videoActive: false, overlayActive: true });
+    });
+  } else {
+    setState({ overlayActive: true });
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -390,13 +339,12 @@ export function MiniTimerLauncher() {
 // video surfaces. Mounted in providers, so it outlives every page.
 
 export function MiniTimerHost() {
-  const tier = useSyncExternalStore(subscribe, detectTier, () => null);
   const { pipWindow, videoActive, overlayActive } = useMiniWindow();
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
 
-  // Register the video-tier surfaces so the launcher's click handler can
-  // reach them synchronously within the user gesture.
+  // Register the video-tier surfaces so the answer's click handler can reach
+  // them synchronously within the user gesture.
   useEffect(() => {
     if (canvasRef.current && videoRef.current) {
       surfaces = { canvas: canvasRef.current, video: videoRef.current };
@@ -404,20 +352,19 @@ export function MiniTimerHost() {
     return () => {
       surfaces = null;
     };
-  }, [tier]);
+  }, []);
 
   const open = pipWindow !== null || videoActive || overlayActive;
 
   return (
     <>
-      {tier === "video" ? (
-        // Offscreen surfaces feeding the floating video. Kept mounted so the
-        // stream survives navigation; invisible in the page itself.
-        <div aria-hidden className="pointer-events-none fixed h-0 w-0 overflow-hidden">
-          <canvas ref={canvasRef} width={320} height={180} />
-          <video ref={videoRef} muted playsInline />
-        </div>
-      ) : null}
+      {/* Offscreen surfaces feeding the floating video. Always mounted: they
+          cost nothing at zero size, and gating them on the tier meant a
+          viewport that turned coarse after load had nothing to stream. */}
+      <div aria-hidden className="pointer-events-none fixed h-0 w-0 overflow-hidden">
+        <canvas ref={canvasRef} width={320} height={180} />
+        <video ref={videoRef} muted playsInline />
+      </div>
       {/* Game data (queries, socket) is only subscribed to while the pop-out
           is actually open; the rest of the time the host is inert. */}
       {open ? (
@@ -443,7 +390,7 @@ function MiniTimerLive({
 }) {
   const t = useTranslations("casino.lastStanding");
   const router = useRouter();
-  const { user } = usePrivy();
+  const { evmAddress: address } = useAuthSession();
   const money = useMoney();
   const { mask } = useBalanceVisibility();
   // The game this timer follows: the last one the user put money into. With
@@ -471,7 +418,6 @@ function MiniTimerLive({
   const { wager, wagering } = useVaultActions();
   const { holding: ethHolding, settle: settleBalance } = useGameBalance();
 
-  const address = getWalletAddress(user, "ethereum");
   const gameActive = !!status?.gameActive;
   const serverSeconds = gameActive ? (status?.timeRemaining ?? 0) : 0;
 
@@ -492,12 +438,18 @@ function MiniTimerLive({
   const remaining = gameActive ? Math.min(ticked, serverSeconds) : (status?.timerDuration ?? 0);
   const urgent = gameActive && remaining > 0 && remaining <= URGENT_SECONDS;
   const clock = formatCountdown(remaining);
-  const statusLabel = gameActive
-    ? urgent
-      ? t("statusEnding")
-      : t("statusLiveRound")
-    : status?.isGameStarted
-      ? t("statusRoundEnded")
+  // The server still calls a game active while the keeper settles it, so the
+  // local clock reaching zero is what tells the pop-out the round is done.
+  const settling = gameActive && remaining <= 0;
+  const ended = settling || (!gameActive && !!status?.isGameStarted);
+  const statusLabel = ended
+    ? settling
+      ? t("statusSettling")
+      : t("statusRoundEnded")
+    : gameActive
+      ? urgent
+        ? t("statusEnding")
+        : t("statusLiveRound")
       : t("statusIdle");
 
   const pot = money.format(status?.vaultBalance.usdValue ?? 0);
@@ -523,8 +475,11 @@ function MiniTimerLive({
     const toastId = toast.loading(t("ctaPlacing"));
     try {
       if (followedGameId === null || !game) return;
-      const stakeWei = parseEther(game.minWager.amount);
-      await wager(followedGameId, stakeWei);
+      // The game is played in USDC. parseEther here sent a 38-cent wager as
+      // 380000000000000000 base units of a 6-decimal token, which the
+      // contract could only reject — the arena page already converts at the
+      // game's own scale and this had been left behind.
+      await wager(followedGameId, usdToUnits(Number(game.minWager.amount)));
       toast.success(t("toastYoureIn"), { id: toastId });
       resyncGame();
       void settleBalance();
@@ -637,14 +592,18 @@ function MiniTimerLive({
         {clock}
       </div>
       <div className="text-[12px] text-white/45">{statusLabel}</div>
-      <button
-        type="button"
-        onClick={() => void onStake()}
-        disabled={wagering || !status || !address}
-        className="text-ink mt-2 w-full cursor-pointer rounded-xl bg-white p-2.5 text-[14px] font-bold disabled:cursor-not-allowed disabled:opacity-50"
-      >
-        {stakeLabel}
-      </button>
+      {/* A finished round cannot take another wager: the contract reverts it,
+          and offering the button reads as the pop-out not having noticed. */}
+      {ended ? null : (
+        <button
+          type="button"
+          onClick={() => void onStake()}
+          disabled={wagering || !status || !address}
+          className="text-ink mt-2 w-full cursor-pointer rounded-xl bg-white p-2.5 text-[14px] font-bold disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {stakeLabel}
+        </button>
+      )}
       <div className="text-[11px] text-white/40">
         {t("yourBalance")} {balance}
       </div>

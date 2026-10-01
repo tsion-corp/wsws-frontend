@@ -4,7 +4,7 @@ import { cache } from "react";
 import { cookies } from "next/headers";
 import type { User } from "@privy-io/node";
 import {
-  ACCESS_TOKEN_COOKIE,
+  accessTokenFromCookie,
   loadVerifiedUser,
   verifyAccessToken,
   type AccessClaims,
@@ -26,7 +26,8 @@ import type { ServerSession } from "@/lib/session";
 // client-supplied shortcut that the request path accepts under a check; a
 // Server Component has no need of it, since the verified user id is enough.
 export const getSessionClaims = cache(async (): Promise<AccessClaims | null> => {
-  const token = (await cookies()).get(ACCESS_TOKEN_COOKIE)?.value;
+  const jar = await cookies();
+  const token = accessTokenFromCookie((name) => jar.get(name)?.value);
   if (!token) return null;
   return verifyAccessToken(token);
 });
