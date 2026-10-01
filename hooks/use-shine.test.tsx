@@ -7,12 +7,16 @@ import { isPersistedKey } from "@/lib/query-persist";
 const apiFetch = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/api", () => ({ apiFetch }));
 
-const privy = vi.hoisted(() => ({
+const session = vi.hoisted(() => ({
   ready: true,
   authenticated: true,
-  user: { id: "did:privy:alice" } as { id: string } | null,
+  userId: "did:privy:alice" as string | null,
+  evmAddress: null as string | null,
+  solanaAddress: null as string | null,
+  profile: { name: "u", email: "", avatarSeed: "u" },
+  logout: async () => {},
 }));
-vi.mock("@privy-io/react-auth", () => ({ usePrivy: () => privy }));
+vi.mock("@/hooks/use-auth-session", () => ({ useAuthSession: () => session }));
 
 import {
   SHINE_SERVICES,
@@ -62,7 +66,7 @@ describe("useShine", () => {
   beforeEach(() => {
     client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     apiFetch.mockReset();
-    privy.user = { id: ALICE };
+    session.userId = ALICE;
   });
   afterEach(() => client.clear());
 
@@ -135,7 +139,7 @@ describe("useShine", () => {
   });
 
   it("refuses to authorise a post with nobody signed in", async () => {
-    privy.user = null;
+    session.userId = null;
     const { result } = renderHook(() => useShine(), { wrapper });
     expect(result.current.mayPost("spot")).toBe(false);
     expect(apiFetch).not.toHaveBeenCalled();
@@ -216,7 +220,7 @@ describe("useShine", () => {
     expect(client.getQueryData(shinePreferencesKey(ALICE))).toBeDefined();
 
     apiFetch.mockResolvedValue(answer());
-    privy.user = { id: BOB };
+    session.userId = BOB;
     rerender();
 
     await waitFor(() => expect(client.getQueryData(shinePreferencesKey(ALICE))).toBeUndefined());

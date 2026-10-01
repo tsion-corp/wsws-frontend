@@ -1,30 +1,32 @@
 "use client";
+import { useAuthSession } from "@/hooks/use-auth-session";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import { useTranslations } from "next-intl";
-import { usePrivy } from "@privy-io/react-auth";
 import { SheetNav } from "@/components/ui/sheet-nav";
+import { useModalScreen } from "@/components/ui/modal-shell";
 import { MASK_ATTRIBUTE, NO_AUTOCAPTURE_CLASS } from "@/lib/analytics/clarity";
-import { track } from "@/lib/analytics/mixpanel";
 import { ArrowUpRightIcon, CheckIcon, SearchIcon, SwapIcon } from "@/components/ui/icons";
 import { usePortfolio } from "@/hooks/use-portfolio";
 import { useSendToken } from "@/hooks/use-withdraw";
 import {
   useCreateOfframpOrder,
   useRampingBanks,
+  useRampingQuote,
   useRampingRates,
   useRampOrder,
   useResolveBankAccount,
 } from "@/hooks/use-ramping";
 import { friendlyError } from "@/lib/errors";
-import { getWalletAddress } from "@/lib/user";
+import { FormFeedback, asError, asNotice, type Feedback } from "@/components/ui/form-feedback";
+import { openOfframpWatch } from "@/lib/ramping/offramp-watch";
 import { formatAmount, fromBaseUnits, toBaseUnits } from "@/lib/trade/math";
 import { SETTLE_CHAINS } from "@/lib/deposit";
 import {
   idempotencyKey,
   isValidOfframpAmount,
-  ngnForUsdcExact,
   OFFRAMP_MIN_USDC,
+  payoutNgnAfterFee,
   usdcForNgnExact,
   type OfframpOrder,
   type RampBank,
@@ -147,10 +149,11 @@ function BankAvatar({
 // Naira figure shown comes from the order once the rail reports it.
 export function BankWithdrawScreen({ onBack }: BankWithdrawScreenProps) {
   const t = useTranslations("bankWithdraw");
-  const { user } = usePrivy();
+  const { authenticated, evmAddress, solanaAddress, profile } = useAuthSession();
+  const addressFor = (chain: string) => (chain === "solana" ? solanaAddress : evmAddress);
   const { tokens, refetch: refetchPortfolio } = usePortfolio();
   const { sendToken } = useSendToken();
-  const walletAddress = getWalletAddress(user, "ethereum");
+  const walletAddress = evmAddress;
 
   const rates = useRampingRates();
   const banks = useRampingBanks(true);
@@ -160,6 +163,14 @@ export function BankWithdrawScreen({ onBack }: BankWithdrawScreenProps) {
   const [query, setQuery] = useState("");
   const [bank, setBank] = useState<SelectedBank | null>(null);
   const [showBankPicker, setShowBankPicker] = useState(false);
+
+  // The flow takes the whole phone, and Back sits beside the shell's close
+  // button rather than scrolling with the form. The bank picker is a step of
+  // its own, so it hands back its own way out.
+  useModalScreen({
+    back: showBankPicker ? () => setShowBankPicker(false) : onBack,
+    fullScreen: true,
+  });
   const [account, setAccount] = useState("");
   const [beneficiaryTab, setBeneficiaryTab] = useState<"recent" | "favorite" | "all">("recent");
   // Users type Naira by default (the amount they want in their bank) and can
@@ -169,7 +180,18 @@ export function BankWithdrawScreen({ onBack }: BankWithdrawScreenProps) {
   const [creation, setCreation] = useState<OfframpOrder | null>(null);
   const [txHash, setTxHash] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
-  const [sendError, setSendError] = useState<string | null>(null);
+  const [feedback, setFeedback] = useState<Feedback | null>(null);
+
+  // Any edit to the amount, the bank or the account number starts a different
+  // withdrawal, so the previous attempt's result stops describing it. Without
+  // this the note survived every edit and every revisit of the screen, which
+  // is how a working offramp came to look broken.
+  const editing =
+    <T,>(set: (v: T) => void) =>
+    (v: T) => {
+      setFeedback(null);
+      set(v);
+    };
 
   const usdc = tokens.find(
     (tk) => tk.network === BASE.alchemyNetwork && tk.symbol.toUpperCase() === "USDC"
@@ -197,8 +219,17 @@ export function BankWithdrawScreen({ onBack }: BankWithdrawScreenProps) {
   const amountUsdcText =
     entry === "usdc" ? amountInput : isFullBalance ? exactBalance : (typedUsdcExact ?? "0");
   const validAmount = isValidOfframpAmount(amount, balance);
-  const payoutNgn =
-    rateStr && validAmount && amountUsdcText ? ngnForUsdcExact(amountUsdcText, rateStr) : null;
+  // The rail prices the withdrawal and reports the payout net of its flat fee.
+  // Its figure is what the bank receives; the local one only fills the gap
+  // while the quote is in flight, so it is marked as an estimate.
+  const quote = useRampingQuote("offramp", validAmount ? amountUsdcText : null);
+  const quotedNgn = quote.data?.side === "offramp" ? quote.data.outputAmount : null;
+  const estimatedNgn =
+    rateStr && validAmount && amountUsdcText
+      ? payoutNgnAfterFee(amountUsdcText, rateStr, quote.data?.feeAmount ?? null)
+      : null;
+  const payoutNgn = quotedNgn ?? estimatedNgn;
+  const payoutIsQuoted = quotedNgn !== null;
   const minNgn = ngnRate > 0 ? OFFRAMP_MIN_USDC * ngnRate : null;
 
   // Switching entry currency carries the typed value across at the live rate,
@@ -223,43 +254,9 @@ export function BankWithdrawScreen({ onBack }: BankWithdrawScreenProps) {
   // the pre-send estimate until then.
   const paidNgn = order?.amountNgn ?? payoutNgn;
 
-  // Reported once on settlement, from the order's own figures. The amounts and
-  // the rail, never the account it was paid into.
-  const reportedComplete = useRef(false);
-  useEffect(() => {
-    if (!done || reportedComplete.current) return;
-    // What the rail says it moved beats what was typed: a payout converts at
-    // the rate that applied when it ran, which is not always the one quoted on
-    // this screen.
-    const usd = Number(order?.amountUsdc) || amount;
-    const rate = Number(order?.rate) || ngnRate;
-    const ngn = Number(paidNgn) || (rate > 0 ? usd * rate : 0);
-    if (!(usd > 0) || !(ngn > 0)) {
-      // A guessed figure on a money event is worse than a late one, and the
-      // Naira leg is the whole point of reporting this rail. Stay quiet and let
-      // a later poll, which will carry the order's figures, report it.
-      console.warn("[analytics] bank withdrawal settled with no figures to report");
-      return;
-    }
-    reportedComplete.current = true;
-    // No recipient here, deliberately: a bank withdrawal's recipient is an
-    // account number, which must never leave the app. The crypto rail sends
-    // recipient_address because an on-chain address is public; this one has no
-    // equivalent that is safe to send.
-    track("withdraw_completed", {
-      method: "bank",
-      asset: "USDC",
-      amount_usd: usd,
-      // The net Naira that reached the account, and the rate the two legs
-      // imply, so amount_ngn / fx_rate is always amount_usd. Two decimals, the
-      // precision the rail quotes rates at. The rail reports no fee of its
-      // own, so none is sent rather than a zero standing in.
-      amount_ngn: ngn,
-      fx_rate: Math.round((ngn / usd) * 100) / 100,
-      // The registry's name, not the tile's label, so one bank is one row.
-      bank: bank?.railName ?? "",
-    });
-  }, [done, order, paidNgn, amount, ngnRate, bank]);
+  // Completion is reported by use-offramp-settlement, which follows the order
+  // from every signed-in page. Reporting it here too would count a payout
+  // twice whenever this screen was still open.
 
   // Popular banks resolved to real uuids against the live list.
   const popularBanks = useMemo(() => {
@@ -295,7 +292,7 @@ export function BankWithdrawScreen({ onBack }: BankWithdrawScreenProps) {
   }, [query, banks.data]);
 
   const pickBank = (b: SelectedBank) => {
-    setBank(b);
+    editing(setBank)(b);
     setQuery("");
     setShowBankPicker(false);
     setAccount("");
@@ -304,7 +301,7 @@ export function BankWithdrawScreen({ onBack }: BankWithdrawScreenProps) {
 
   const onAccountChange = (raw: string) => {
     const next = raw.replace(/\D/g, "").slice(0, 10);
-    setAccount(next);
+    editing(setAccount)(next);
     resolve.reset();
     // Verify as soon as a full account number is entered, no extra tap.
     if (bank && next.length === 10) {
@@ -375,7 +372,7 @@ export function BankWithdrawScreen({ onBack }: BankWithdrawScreenProps) {
 
   const submit = async () => {
     if (!bank || !verifiedName || !validAmount || !walletAddress) return;
-    setSendError(null);
+    setFeedback(null);
     setSubmitting(true);
     let broadcasting = false;
     try {
@@ -391,7 +388,7 @@ export function BankWithdrawScreen({ onBack }: BankWithdrawScreenProps) {
       });
       setCreation(result);
       if (!result.depositAddress) {
-        setSendError(t("noAddress"));
+        setFeedback(asError(t("noAddress")));
         return;
       }
       broadcasting = true;
@@ -403,10 +400,28 @@ export function BankWithdrawScreen({ onBack }: BankWithdrawScreenProps) {
         amount: toBaseUnits(amountUsdcText, BASE.decimals),
       });
       setTxHash(hash);
+      // The payout is now the rail's to make. Remembered so it is reported
+      // when it ends, whether or not this screen is still open (see
+      // use-offramp-settlement). Not before the send: an order the user never
+      // funded is not a withdrawal that failed.
+      openOfframpWatch(
+        {
+          wallet: walletAddress,
+          orderId: result.id,
+          // The registry's name, not the tile's label, so one bank is one row.
+          bank: bank.railName,
+          amountUsd: Number(amountUsdcText),
+        },
+        Date.now()
+      );
     } catch (e) {
       // Past broadcast, a failure can't be reported as "not sent": the transfer
       // may already be on-chain. Surface an unconfirmed note instead.
-      setSendError(broadcasting ? t("sendUnconfirmed") : friendlyError(e, t("createFailed")));
+      // Past broadcast this is a notice, not an error: the transfer may
+      // already be on chain, so it is never shown in the failure colour.
+      setFeedback(
+        broadcasting ? asNotice(t("sendUnconfirmed")) : asError(friendlyError(e, t("createFailed")))
+      );
     } finally {
       setSubmitting(false);
     }
@@ -434,11 +449,7 @@ export function BankWithdrawScreen({ onBack }: BankWithdrawScreenProps) {
   if (showBankPicker) {
     return (
       <div>
-        <SheetNav
-          title={t("title")}
-          subtitle={t("subtitle")}
-          onBack={() => setShowBankPicker(false)}
-        />
+        <SheetNav title={t("title")} subtitle={t("subtitle")} />
 
         <label className="focus-within:border-accent/45 mt-6 flex items-center gap-2.5 rounded-2xl border border-white/15 bg-[#1b1b1b] px-5 py-4 transition-colors">
           <SearchIcon size={16} />
@@ -517,7 +528,7 @@ export function BankWithdrawScreen({ onBack }: BankWithdrawScreenProps) {
   if (showAmountStep) {
     return (
       <div>
-        <SheetNav title={t("title")} subtitle={t("subtitle")} onBack={onBack} />
+        <SheetNav title={t("title")} subtitle={t("subtitle")} />
 
         {/* Selected bank pill */}
         <button
@@ -560,7 +571,7 @@ export function BankWithdrawScreen({ onBack }: BankWithdrawScreenProps) {
               value={formatAmountInput(amountInput)}
               onChange={(e) => {
                 const raw = e.target.value.replace(/,/g, "");
-                if (DECIMAL.test(raw)) setAmountInput(raw);
+                if (DECIMAL.test(raw)) editing(setAmountInput)(raw);
               }}
               placeholder={entry === "ngn" ? "0" : "0.00"}
               className="ws-display tnum w-full border-none bg-transparent text-[42px] text-white outline-none placeholder:text-white/40"
@@ -584,7 +595,9 @@ export function BankWithdrawScreen({ onBack }: BankWithdrawScreenProps) {
                 : validAmount
                   ? entry === "ngn"
                     ? t("usdcEquivalent", { amount: formatAmount(amount) })
-                    : t("youReceive", { amount: `₦${formatNgn(Number(payoutNgn ?? 0))}` })
+                    : t(payoutIsQuoted ? "youReceiveExact" : "youReceive", {
+                        amount: `₦${formatNgn(Number(payoutNgn ?? 0))}`,
+                      })
                   : entry === "ngn" && minNgn != null
                     ? t("enterMinNgn", { amount: `₦${formatNgn(minNgn)}` })
                     : t("enterMin", { amount: OFFRAMP_MIN_USDC })}
@@ -597,7 +610,7 @@ export function BankWithdrawScreen({ onBack }: BankWithdrawScreenProps) {
           </div>
         </div>
 
-        {sendError ? <p className="text-down mt-3 text-[13px]">{sendError}</p> : null}
+        <FormFeedback feedback={feedback} />
 
         <button
           onClick={submit}
@@ -620,7 +633,7 @@ export function BankWithdrawScreen({ onBack }: BankWithdrawScreenProps) {
   // Initial screen: bank pill + account input + continue + beneficiaries.
   return (
     <div>
-      <SheetNav title={t("title")} subtitle={t("subtitle")} onBack={onBack} />
+      <SheetNav title={t("title")} subtitle={t("subtitle")} />
 
       {/* Bank selector pill */}
       <button
@@ -682,7 +695,7 @@ export function BankWithdrawScreen({ onBack }: BankWithdrawScreenProps) {
         continue
       </button>
 
-      {sendError ? <p className="text-down mt-3 text-[13px]">{sendError}</p> : null}
+      <FormFeedback feedback={feedback} />
 
       {/* Beneficiary tabs */}
       <div className="mt-8 flex items-center justify-between px-2">

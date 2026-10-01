@@ -66,7 +66,6 @@ import { metricValue, type ScreenerMetric } from "@/lib/meme/screener";
 import { scopeOf } from "@/lib/portfolio/fresh-scope";
 import { buyFunding } from "@/lib/meme/funding";
 import { exceedsHeld } from "@/lib/meme/sell-amount";
-import { ShineToggle } from "@/components/shine/shine-toggle";
 import { toast } from "@/lib/toast";
 import { belowMinimumBuy } from "@/lib/trade/minimums";
 import { tokenBg } from "@/lib/trade/assets";
@@ -119,6 +118,29 @@ const TABS = [
 ] as const;
 
 type TabId = (typeof TABS)[number]["id"];
+
+/**
+ * Tabs this build does not offer.
+ *
+ * A visibility switch, like HIDDEN_NAV_SECTIONS in lib/sections.ts, and it
+ * tracks it entry for entry. Prediction came off on 2026-09-16, went back on
+ * in #517, and came off again on 2026-09-25. Perpetuals came off on the same
+ * day, which empties the list: the desk was held back as a product decision
+ * while it was exercised on staging, and that decision is reversed.
+ *
+ * TABS above stays the full catalogue so TabId keeps naming every tab and the
+ * handoff routes below still typecheck; only the strip the reader is offered
+ * is filtered, and a ?tab= pointing at a hidden one falls back to Spot rather
+ * than opening a tab with nothing behind it. That fallback is why this list
+ * can be emptied without touching anything else.
+ *
+ * Put an id back to hide a tab again.
+ */
+const HIDDEN_TABS: readonly TabId[] = [];
+
+function isOfferedTab(id: string | null): id is TabId {
+  return TABS.some((tab) => tab.id === id) && !HIDDEN_TABS.includes(id as TabId);
+}
 
 // Each tab's standalone desktop screen. Spot goes to the desk (with the app
 // sidebar), and Leverage, Memecoins, Real assets and Prediction to their own
@@ -246,7 +268,7 @@ function PagedRows<T>({
  * into view; without that, choosing Prediction on a 390px screen left it
  * half-clipped at the right edge.
  *
- * This duplicates features/square/components/square-tabs.tsx, which solves the
+ * This duplicates components/ui/tabs.tsx, which solves the
  * same problem for the feed. The two should be merged into a shared primitive
  * under components/ui/ once the screens in flight have landed; features cannot
  * import each other, so neither can reuse the other where they sit today.
@@ -358,7 +380,7 @@ export function MobileMarketView({ rwaSlot, onAddFunds }: MobileMarketViewProps)
   const searchParams = useSearchParams();
   const [activeTab, setActiveTab] = useState<TabId>(() => {
     const wanted = searchParams.get("tab");
-    return TABS.some((tab) => tab.id === wanted) ? (wanted as TabId) : "spot";
+    return isOfferedTab(wanted) ? wanted : "spot";
   });
 
   // A tab with a desktop route hands off to it at md and up, so md gets the full
@@ -517,7 +539,14 @@ export function MobileMarketView({ rwaSlot, onAddFunds }: MobileMarketViewProps)
   const panelId = useId();
   const tabDomId = useCallback((id: TabId) => `${panelId}-tab-${id}`, [panelId]);
 
-  const tabs = useMemo(() => TABS.map((tab) => ({ id: tab.id, label: t(tab.labelKey) })), [t]);
+  const tabs = useMemo(
+    () =>
+      TABS.filter((tab) => !HIDDEN_TABS.includes(tab.id)).map((tab) => ({
+        id: tab.id,
+        label: t(tab.labelKey),
+      })),
+    [t]
+  );
 
   // A category change puts both tickets away. The queries stay: each belongs to
   // one list, and the reader gets that list back as they left it.
@@ -728,21 +757,6 @@ export function MobileMarketView({ rwaSlot, onAddFunds }: MobileMarketViewProps)
           tabId={tabDomId}
           tabs={tabs}
         />
-
-        {/* Shine for the tab being looked at, right under the tab strip. It
-            is on by default and posts a confirmed trade publicly without
-            asking each time, so it has to be in view on the surface the trade
-            is made from, not in a settings sheet.
-
-            Spot and Memecoins only: the Perps tab draws the perps desk, which
-            carries its own, and Real assets and Prediction belong to other
-            features. */}
-        {activeTab === "spot" || activeTab === "memecoins" ? (
-          <ShineToggle
-            service={activeTab === "spot" ? "spot" : "memecoin"}
-            className="mt-3 shrink-0"
-          />
-        ) : null}
 
         {/* One panel, named by the tab that selected it. */}
         <div

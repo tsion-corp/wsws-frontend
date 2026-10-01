@@ -14,7 +14,7 @@ import { CoinChip } from "@/features/square/components/coin-chip";
 import { ExpandableText } from "@/features/square/components/expandable-text";
 import { FollowButton } from "@/features/square/components/follow-button";
 import { authorName } from "@/lib/square/author";
-import { SquareAvatar } from "@/features/square/components/square-avatar";
+import { SquareAvatar } from "@/components/ui/square-avatar";
 import type { MarketSquareFeedPost } from "@/lib/api/market-square";
 import type { TradableSymbol } from "@/lib/square/tradable";
 import type { BuyPayload } from "@/lib/modal-types";
@@ -126,12 +126,7 @@ function SquareLink({ path, value }: { path: string; value: string }) {
   const href = marketSquareHref(path);
   if (!href) return <span>{value}</span>;
   return (
-    <a
-      href={href}
-      target="_blank"
-      rel="noopener noreferrer"
-      className="text-accent hover:underline"
-    >
+    <a href={href} className="text-accent hover:underline">
       {value}
     </a>
   );
@@ -152,7 +147,7 @@ export function SquarePostCard({
   const t = useTranslations("square");
   const engage = useSquareEngage();
   const [commenting, setCommenting] = useState(false);
-  const seenRef = useRecordView(post.id);
+  const seenRef = useRecordView(post.id, post.author?.id);
   const author = post.author;
   // Never offer to follow yourself.
   const isMe = meId !== undefined && author?.id === meId;
@@ -215,8 +210,6 @@ export function SquarePostCard({
         {href ? (
           <a
             href={href}
-            target="_blank"
-            rel="noopener noreferrer"
             className="text-grey-600 hover:text-grey-300 shrink-0 p-1 transition-colors"
             aria-label={t("openPost")}
           >
@@ -314,8 +307,6 @@ export function SquarePostCard({
       {post.preview ? (
         <a
           href={href ?? undefined}
-          target="_blank"
-          rel="noopener noreferrer"
           className="border-grey-800 bg-grey-900 hover:border-grey-700 mt-3 flex items-center gap-3 rounded-xl border p-3 transition-colors"
         >
           {post.preview.imageUrl ? (
@@ -344,8 +335,6 @@ export function SquarePostCard({
       {poster ? (
         <a
           href={href ?? undefined}
-          target="_blank"
-          rel="noopener noreferrer"
           className="border-grey-800 relative mt-3 block overflow-hidden rounded-xl border bg-black/40"
         >
           {/* eslint-disable-next-line @next/next/no-img-element -- author-supplied host is unknown */}
@@ -400,7 +389,12 @@ export function SquarePostCard({
           activeClass="text-up"
           disabled={engage.isPending}
           onClick={() =>
-            engage.mutate({ postId: post.id, action: "repost", on: !post.repostedByMe })
+            engage.mutate({
+              postId: post.id,
+              action: "repost",
+              on: !post.repostedByMe,
+              authorId: post.author?.id,
+            })
           }
         >
           <svg viewBox="0 0 24 24" aria-hidden className="h-full w-full">
@@ -421,7 +415,14 @@ export function SquarePostCard({
           active={post.likedByMe}
           activeClass="text-down"
           disabled={engage.isPending}
-          onClick={() => engage.mutate({ postId: post.id, action: "like", on: !post.likedByMe })}
+          onClick={() =>
+            engage.mutate({
+              postId: post.id,
+              action: "like",
+              on: !post.likedByMe,
+              authorId: post.author?.id,
+            })
+          }
         >
           <svg viewBox="0 0 24 24" aria-hidden className="h-full w-full">
             <path

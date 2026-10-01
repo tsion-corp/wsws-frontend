@@ -33,6 +33,44 @@ export interface ArkjetRoundHistory {
   nextBeforeSequence: number | null;
 }
 
+export type ArkjetSimulatedActivityStatus =
+  "PENDING" | "ACTIVE" | "CASHED_OUT" | "LOST" | "CANCELLED";
+
+export interface ArkjetSimulatedActivityItem {
+  activityId: string;
+  roundId: string;
+  position: number;
+  profileName: string;
+  profileAvatarSeed: string;
+  currency: string;
+  stake: string;
+  cashoutTargetMultiplier: string;
+  status: ArkjetSimulatedActivityStatus;
+  cashoutMultiplier: string | null;
+  displayPayout: string | null;
+  joinedAt: string | null;
+  settledAt: string | null;
+  source: "simulation";
+  isSimulated: true;
+}
+
+export interface ArkjetSimulatedActivityFeed {
+  roundId: string;
+  currency: string;
+  totalEntries: number;
+  activeEntries: number;
+  cashedOutEntries: number;
+  lostEntries: number;
+  totalStake: string;
+  totalDisplayPayout: string;
+  minimumStake: string;
+  maximumStake: string;
+  source: "simulation";
+  isSimulated: true;
+  disclosure: string;
+  items: ArkjetSimulatedActivityItem[];
+}
+
 export interface ArkjetCapabilities {
   fairnessEnabled: boolean;
   roundEngineEnabled: boolean;
@@ -129,6 +167,7 @@ export interface ArkjetBalance {
 }
 
 export interface ArkjetFundingConfig {
+  custodyScope: "shared" | "spin";
   chainId: number;
   tokenSymbol: string;
   tokenAddress: string;
@@ -150,6 +189,7 @@ export interface ArkjetDeposit {
   amountUsdc: string;
   creditedAmount: string;
   currency: string;
+  custodyScope: "shared" | "spin";
   status: string;
   creditedAt: string;
 }
@@ -161,6 +201,7 @@ export interface ArkjetWithdrawal {
   fee: string;
   amountUsdc: string;
   currency: string;
+  custodyScope: "shared" | "spin";
   status: string;
   txHash: string | null;
   createdAt: string;
@@ -283,12 +324,86 @@ export interface ChickenActionInput {
   idempotencyKey: string;
 }
 
+export type ArkadeCampaignStatus =
+  "upcoming" | "active" | "ended" | "drawn" | "closed" | "cancelled";
+
+export interface ArkadeCampaign {
+  campaignId: string;
+  slug: string;
+  displayName: string;
+  status: ArkadeCampaignStatus;
+  startsAt: string;
+  endsAt: string;
+  secondsRemaining: number;
+  currency: string;
+  minimumStake: string;
+  minimumStakeMinor: number;
+  targetMultiplier: string;
+  targetMultiplierHundredths: number;
+  spinStreakTarget: number;
+  prize: string;
+  prizeMinor: number;
+  drawSeedCommitment: string;
+  drawSeedRevealed: string | null;
+  qualifiedEntrants: number;
+}
+
+export interface ArkadeMultiplierProgress {
+  completed: boolean;
+  bestMultiplier: string;
+  targetMultiplier: string;
+}
+
+export interface ArkadeSpinProgress {
+  completed: boolean;
+  currentStreak: number;
+  bestStreak: number;
+  targetStreak: number;
+}
+
+export interface ArkadeCampaignJourney {
+  campaign: ArkadeCampaign;
+  progress: {
+    arkjet: ArkadeMultiplierProgress;
+    chickenCross: ArkadeMultiplierProgress;
+    spinDaBottle: ArkadeSpinProgress;
+    qualified: boolean;
+    qualifiedAt: string | null;
+    isWinner: boolean;
+  };
+}
+
+export interface ArkadeCampaignDrawProof {
+  campaignId: string;
+  algorithm: string;
+  seedCommitment: string;
+  seedRevealed: string;
+  entrantCommitments: string[];
+  winnerCommitment: string | null;
+}
+
+export const ARKADE_CAMPAIGN_QUERY_KEY = ["casino", "arkade", "campaign"] as const;
+
 export function fetchArkjetCurrentRound(): Promise<ArkjetRound> {
   return arkjet.get<ArkjetRound>("/rounds/current");
 }
 
+export function fetchCurrentArkadeCampaign(): Promise<ArkadeCampaignJourney> {
+  return arkjet.authedGet<ArkadeCampaignJourney>("/campaigns/current");
+}
+
+export function fetchArkadeCampaignDrawProof(campaignId: string): Promise<ArkadeCampaignDrawProof> {
+  return arkjet.get<ArkadeCampaignDrawProof>(
+    `/campaigns/${encodeURIComponent(campaignId)}/draw-proof`
+  );
+}
+
 export function fetchArkjetRoundHistory(limit = 18): Promise<ArkjetRoundHistory> {
   return arkjet.get<ArkjetRoundHistory>("/rounds/history", { limit });
+}
+
+export function fetchArkjetSimulatedActivity(): Promise<ArkjetSimulatedActivityFeed> {
+  return arkjet.get<ArkjetSimulatedActivityFeed>("/activity/simulated/current");
 }
 
 export function fetchArkjetCapabilities(): Promise<ArkjetCapabilities> {

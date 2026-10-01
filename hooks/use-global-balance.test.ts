@@ -6,10 +6,17 @@ import { createElement, type ReactNode } from "react";
 
 vi.mock("server-only", () => ({}));
 
-const privy = vi.hoisted(() => ({ user: {}, ready: true, authenticated: true }));
-vi.mock("@privy-io/react-auth", () => ({ usePrivy: () => privy }));
-vi.mock("@/lib/user", () => ({
-  getWalletAddress: (_u: unknown, chain: string) => (chain === "solana" ? "SoL1" : "0xEvm"),
+// The session, through the Decane-backed seam: `privy` still drives
+// ready/authenticated so the cases below keep their meaning.
+const privy = vi.hoisted(() => ({ ready: true, authenticated: true }));
+vi.mock("@/hooks/use-auth-session", () => ({
+  useAuthSession: () => ({
+    evmAddress: "0xEvm",
+    solanaAddress: "SoL1",
+    profile: { name: "", email: "", avatarSeed: "" },
+    logout: vi.fn(),
+    ...privy,
+  }),
 }));
 
 const apiFetch = vi.hoisted(() => vi.fn());
@@ -17,8 +24,24 @@ vi.mock("@/lib/api", () => ({ apiFetch }));
 
 const { useGlobalBalance } = await import("@/hooks/use-global-balance");
 
+// A portfolio worth `totalUsd`, held in one token. The total is derived from
+// the holdings (dust is left out of it), so a payload that names a figure with
+// nothing behind it is not a payload the server can send.
 function portfolioResponse(totalUsd: number) {
-  return { ok: true, status: 200, json: async () => ({ totalUsd, tokens: [] }) };
+  const token = {
+    symbol: "USDC",
+    name: "USD Coin",
+    network: "base-mainnet",
+    address: "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+    decimals: 6,
+    kind: "stablecoin",
+    balance: totalUsd,
+    rawBalance: String(Math.round(totalUsd * 1e6)),
+    priceUsd: 1,
+    valueUsd: totalUsd,
+    logo: null,
+  };
+  return { ok: true, status: 200, json: async () => ({ totalUsd, tokens: [token] }) };
 }
 
 function perpsResponse(withdrawable: string) {

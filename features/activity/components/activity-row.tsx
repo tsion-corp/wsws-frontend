@@ -200,7 +200,13 @@ export function ActivityRow({ item, priceUsd }: { item: ActivityEntry; priceUsd:
         href={explorer ? `${explorer}${item.hash}` : undefined}
         onClick={() => {
           if (explorer)
-            track("arktivity_tx_opened", { chain: item.network, direction: item.direction });
+            track("arktivity_tx_opened", {
+              tx_type: item.direction === "in" ? "receive" : "send",
+              asset: item.symbol,
+              network: item.network,
+              tx_hash: item.hash,
+              direction: item.direction,
+            });
         }}
         target="_blank"
         rel="noopener noreferrer"
@@ -219,6 +225,7 @@ export function ActivityRow({ item, priceUsd }: { item: ActivityEntry; priceUsd:
             <div className="truncate text-xs font-normal text-white/50">
               {clockTime(item.timestamp)} ·{" "}
               {network === "Bitcoin" ? network : (NETWORK_LABEL[network] ?? network)}
+              {item.legacy ? ` · ${t("oldAccount")}` : ""}
               {item.counterparty
                 ? ` · ${incoming ? t("from") : t("to")} ${truncateAddress(item.counterparty)}`
                 : ""}
@@ -237,7 +244,16 @@ export function ActivityRow({ item, priceUsd }: { item: ActivityEntry; priceUsd:
           </div>
         </div>
       </a>
-      <ShareButton label={title} onClick={() => setSharing(true)} />
+      <ShareButton
+        label={title}
+        onClick={() => {
+          track("arkivity_tx_shared", {
+            tx_type: item.direction === "in" ? "receive" : "send",
+            tx_hash: item.hash,
+          });
+          setSharing(true);
+        }}
+      />
       {sharing ? <ShareToSquare draft={shareDraft} open onClose={() => setSharing(false)} /> : null}
     </div>
   );

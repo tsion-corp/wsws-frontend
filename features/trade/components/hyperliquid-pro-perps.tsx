@@ -15,6 +15,7 @@ import {
   PerpOrderTicket,
   type PerpOrderSide,
   type PerpMarginMode,
+  type PerpTriggerProjectionView,
 } from "@/features/trade/components/perp-order-ticket";
 import { spotAmountStatus } from "@/features/trade/components/spot-amount-card";
 import type { SpotOrderMode } from "@/features/trade/components/spot-order-mode-toggle";
@@ -27,10 +28,25 @@ import {
   type LiquidationMargin,
 } from "@/features/trade/lib/liquidation";
 import { tradingViewSymbolForAsset } from "@/features/trade/lib/hyperliquid-tradingview";
-import { formatUsd, openFee, toBaseUnits } from "@/lib/trade/math";
+import {
+  formatSignedPercent,
+  formatUsd,
+  inferBracketSide,
+  openFee,
+  projectTriggerPnl,
+  toBaseUnits,
+} from "@/lib/trade/math";
 import { entryPriceFromUsdString, reportShine } from "@/lib/shine";
-import { ShineToggle } from "@/components/shine/shine-toggle";
 import { friendlyError } from "@/lib/errors";
+import { track } from "@/lib/analytics/mixpanel";
+import { PERP_FAILURE, reasonFor } from "@/lib/analytics/failure-reason";
+import {
+  marketTypeOf,
+  perpClosedProps,
+  perpOpenedProps,
+  perpOrderProps,
+  type PerpTicket,
+} from "@/features/trade/lib/perp-analytics";
 import { scrubVenue } from "@/features/trade/lib/venue-scrub";
 import type { GatewayApiError } from "@/lib/api/envelope";
 import {
@@ -220,6 +236,21 @@ export function HyperliquidProPerps({ initialSymbol = "" }: HyperliquidProPerpsP
     trading.assets.find((a) => a.symbol === "BTC") ??
     trading.assets[0] ??
     null;
+  // The market on screen, reported once per market. Keyed by symbol alone:
+  // the desk re-renders on every price tick, and the old desk re-sent this on
+  // each data refresh, which is how a view count reached 94,707.
+  const viewedMarket = useRef<string | null>(null);
+  const viewedSymbol = asset?.symbol ?? null;
+  const viewedCategory = asset?.category ?? null;
+  useEffect(() => {
+    if (!viewedSymbol || viewedMarket.current === viewedSymbol) return;
+    viewedMarket.current = viewedSymbol;
+    track("perp_market_viewed", {
+      pair: viewedSymbol,
+      market_type: marketTypeOf(viewedCategory),
+      venue: "hyperliquid",
+    });
+  }, [viewedSymbol, viewedCategory]);
   const markPrice = asset ? Number(trading.prices[asset.symbol] ?? 0) : 0;
   const currentPosition = asset
     ? (trading.positions.find((p) => p.assetId === asset.id && p.status === "open") ?? null)
@@ -296,6 +327,58 @@ export function HyperliquidProPerps({ initialSymbol = "" }: HyperliquidProPerpsP
     return null;
   };
 
+  // --- take profit / stop loss projection --------------------------------
+  // What the bracket stands to make or cost, so the trader sees the stakes
+  // before committing. This ticket has no side control, so the intended
+  // direction is inferred from where the brackets sit relative to entry: a take
+  // profit above entry (or a stop loss below it) is a long, the reverse a short.
+  // Only a leg on the correct side of entry reads as a gain/loss; a crossed one
+  // is already flagged by triggerReasonFor and shows nothing here.
+  const tpPriceNum = Number(takeProfitPrice) || 0;
+  const slPriceNum = Number(stopLossPrice) || 0;
+  const bracketSide: HlOrderSide | null = inferBracketSide(entryPriceNum, tpPriceNum, slPriceNum);
+  const projectionBase =
+    triggersOpen && bracketSide
+      ? {
+          side: bracketSide,
+          entryPrice: entryPriceNum,
+          sizeBaseUnits,
+          marginUsd: collateralUsdcNum,
+        }
+      : null;
+  const tpProjection = projectionBase
+    ? projectTriggerPnl({ ...projectionBase, triggerPrice: tpPriceNum })
+    : null;
+  const slProjection = projectionBase
+    ? projectTriggerPnl({ ...projectionBase, triggerPrice: slPriceNum })
+    : null;
+  const takeProfitGain = tpProjection && tpProjection.pnlUsd > 0 ? tpProjection : null;
+  const stopLossRisk = slProjection && slProjection.pnlUsd < 0 ? slProjection : null;
+  // Reward-to-risk as "1 : N", the ratio traders judge a setup by — only when
+  // both legs are set and on the right side of entry.
+  const rewardToRisk =
+    takeProfitGain && stopLossRisk && stopLossRisk.pnlUsd !== 0
+      ? Math.abs(takeProfitGain.pnlUsd / stopLossRisk.pnlUsd)
+      : null;
+  const triggerProjection: PerpTriggerProjectionView | null =
+    takeProfitGain || stopLossRisk
+      ? {
+          takeProfit: takeProfitGain
+            ? {
+                amount: `+${formatUsd(takeProfitGain.pnlUsd)}`,
+                roe: formatSignedPercent(takeProfitGain.roePct),
+              }
+            : null,
+          stopLoss: stopLossRisk
+            ? {
+                amount: `-${formatUsd(Math.abs(stopLossRisk.pnlUsd))}`,
+                roe: formatSignedPercent(stopLossRisk.roePct),
+              }
+            : null,
+          rewardRisk: rewardToRisk ? `1 : ${rewardToRisk.toFixed(2)}` : null,
+        }
+      : null;
+
   // --- estimated liquidation, per side -----------------------------------
   // Both sides, never one unlabelled figure: a long and a short liquidate on
   // opposite sides of entry, and this ticket has no direction until the button
@@ -345,7 +428,17 @@ export function HyperliquidProPerps({ initialSymbol = "" }: HyperliquidProPerpsP
   const handleClosePosition = (position: HlPositionView, siblingOrderIdsToCancel: string[]) =>
     withBusy(async () => {
       try {
-        await trading.actions.closePosition(position.id, siblingOrderIdsToCancel);
+        const closeOrder = await trading.actions.closePosition(
+          position.id,
+          siblingOrderIdsToCancel
+        );
+        // Reported only with the close order in hand: it is what the event
+        // is keyed by, and a close must never fail on its report.
+        if (closeOrder) {
+          const market =
+            trading.assets.find((a) => a.id === position.assetId)?.symbol ?? position.assetId;
+          track("perp_trade_closed", perpClosedProps(position, market, closeOrder));
+        }
       } finally {
         trading.refetchAll();
         // The immediate refetch above usually already shows the close (a
@@ -420,10 +513,28 @@ export function HyperliquidProPerps({ initialSymbol = "" }: HyperliquidProPerpsP
     setOrderStatus(null);
     setPendingSide(side);
     void withBusy(async () => {
+      // What the ticket asked for, fixed before the fields are cleared.
+      const ticket: PerpTicket = {
+        market: asset.symbol,
+        side,
+        orderMode,
+        leverage: clampedLeverage,
+        marginMode,
+        collateralUsd: collateralUsdcNum,
+        notionalUsd: notionalUsdc,
+        markPrice,
+        limitPrice,
+        takeProfitPrice: triggersOpen ? takeProfitPrice : "",
+        stopLossPrice: triggersOpen ? stopLossPrice : "",
+      };
+      // The order as it is about to be sent. Reported before the venue has
+      // said anything, so an order that never comes back is still counted.
+      const order = perpOrderProps(ticket);
       try {
         setPendingStatus(t("preparingTrade"));
         await trading.actions.updateLeverage(asset.symbol, clampedLeverage, marginMode);
         setPendingStatus(t("placingOrder"));
+        track("perp_order_submitted", order);
         const before = JSON.stringify(trading.positions.map((p) => [p.id, p.size]).sort());
         const result = await trading.actions.placeOrder(
           {
@@ -479,6 +590,11 @@ export function HyperliquidProPerps({ initialSymbol = "" }: HyperliquidProPerpsP
               price: entryPriceFromUsdString(opened.entryPrice),
             });
           });
+        void trading.waitForPositionsChange(
+          (rows) => JSON.stringify(rows.map((p) => [p.id, p.size]).sort()) !== before
+        );
+        const openedProps = perpOpenedProps(ticket, result.entryOrder);
+        if (openedProps) track("perp_trade_opened", openedProps);
 
         const rejectedLegs = [
           result.takeProfitOrder?.status === "rejected" ? t("takeProfit") : null,
@@ -507,6 +623,18 @@ export function HyperliquidProPerps({ initialSymbol = "" }: HyperliquidProPerpsP
         setStopLossPrice("");
       } catch (error) {
         const details = (error as GatewayApiError)?.details;
+        track("perp_trade_failed", {
+          pair: order.pair,
+          direction: order.direction,
+          // The desk checks the margin itself and gets a structured answer, so
+          // it says so outright rather than reading it back off the message.
+          ...(isInsufficientMarginDetails(details)
+            ? { reason: "insufficient_margin" as const }
+            : reasonFor(PERP_FAILURE, error)),
+          leverage: order.leverage,
+          margin_mode: order.margin_mode,
+          collateral_usd: order.collateral_usd,
+        });
         if (isInsufficientMarginDetails(details)) {
           setOrderStatus({
             text: t("stillShortAfterTopUp", {
@@ -615,7 +743,6 @@ export function HyperliquidProPerps({ initialSymbol = "" }: HyperliquidProPerpsP
           they are trading on. This is the only perps interface in the app, so
           one placement here covers /perps, the deep-linked terminal and the
           phone Market tab. */}
-      <ShineToggle service="perps" className="mb-4" />
       <LeverageDesktopLayout
         // The design's ticket is a fixed 924px. Held as a floor rather than a
         // fixed height, because the order form grows with margin mode, TP/SL
@@ -783,13 +910,57 @@ export function HyperliquidProPerps({ initialSymbol = "" }: HyperliquidProPerpsP
         // amount. Everything derived from it (notional, wire size, the minimum
         // check, the liquidation estimate) is computed above from that reading.
         //
-        // Top up and Withdraw sit under the ticket rather than inside it: they
-        // move USDC in and out of the perps account and are not order entry. The
-        // ticket says so itself and exposes nothing for them.
+        // Top up and Withdraw are built here and handed to the ticket through
+        // its `accountActions` slot, which draws them as its first row. They
+        // move USDC in and out of the leverage account and are not order entry,
+        // so the ticket still knows nothing about them — it is given a finished
+        // node and a place to put it.
         orderEntry={
           signedOut ? null : (
             <div className="flex w-full flex-col gap-3">
               <PerpOrderTicket
+                accountActions={
+                  /* Funding the account, at the top of the ticket, where the
+                   maintainer asked for it. It used to sit under the ticket
+                   behind a top border; at the top that border would divide it
+                   from nothing, so it is gone and the ticket's own gap-2 is
+                   the separation.
+
+                   Still PerpOrderTicket's ActionButton geometry — the same
+                   h-12, rounded-3xl, border-2, gap-2 and 16px semibold as the
+                   Long/Short pair — so the two rows read as one family top and
+                   bottom. Still NOT bg-buy or bg-sell: those two tokens mean
+                   "this places an order", and these move collateral. A green
+                   button that is not Long, on a leveraged desk, is a misfire
+                   waiting to happen. */
+                  <div className="flex w-full items-start gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setFundOpen(true)}
+                      disabled={!trading.walletId || busy}
+                      // When the entered collateral outruns the HyperCore balance the
+                      // button takes the same kash accent as the ticket's "may bridge"
+                      // advisory, so the note and the way to clear it read as one
+                      // thing. The order still places either way; this only makes
+                      // funding up front the obvious move.
+                      className={`bg-surface-strong flex h-12 min-w-0 flex-1 shrink-0 cursor-pointer items-center justify-center rounded-3xl border-2 font-[family-name:var(--font-sportsbook)] text-[16px] font-semibold transition-all hover:bg-white/16 disabled:cursor-not-allowed disabled:opacity-45 ${
+                        emphasizeTopUp
+                          ? "border-kash text-kash shadow-[0_0_0_3px_rgba(255,214,47,0.18)]"
+                          : "border-hairline text-white"
+                      }`}
+                    >
+                      {trading.walletId ? t("topUp") : t("topUpPreparing")}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setWithdrawOpen(true)}
+                      disabled={!trading.walletId || busy || collateralBalance <= 0n}
+                      className="border-hairline hover:bg-surface flex h-12 min-w-0 flex-1 shrink-0 cursor-pointer items-center justify-center rounded-3xl border-2 bg-transparent font-[family-name:var(--font-sportsbook)] text-[16px] font-semibold text-white transition-colors disabled:cursor-not-allowed disabled:opacity-45"
+                    >
+                      {t("withdraw")}
+                    </button>
+                  </div>
+                }
                 pair={asset ? hlPairLabel(asset.symbol) : ""}
                 change24h={changeLabel ?? "\u2014"}
                 changeDirection={changeDirection ?? "flat"}
@@ -832,6 +1003,7 @@ export function HyperliquidProPerps({ initialSymbol = "" }: HyperliquidProPerpsP
                   onOpenChange: setTriggersOpen,
                   takeProfit: { value: takeProfitPrice, onChange: setTakeProfitPrice },
                   stopLoss: { value: stopLossPrice, onChange: setStopLossPrice },
+                  projection: triggerProjection,
                 }}
                 summary={{
                   orderValue: notionalUsdc > 0 ? formatUsd(notionalUsdc) : "\u2014",
@@ -871,49 +1043,6 @@ export function HyperliquidProPerps({ initialSymbol = "" }: HyperliquidProPerpsP
                   {orderStatus.text}
                 </p>
               ) : null}
-
-              {/* Moving USDC in and out of the perps account. Both were on
-                  HyperliquidOrderForm's own footer and neither is order entry,
-                  so they move here with their modals and their wiring
-                  unchanged. A trader must always be able to get money out.
-
-                  One row, split evenly, in PerpOrderTicket's ActionButton
-                  geometry: the same h-12, rounded-3xl, border-2, gap-2 and
-                  16px semibold Inter as the Buy/Sell pair directly above, so
-                  the two rows read as one family. NOT bg-buy or bg-sell. Those
-                  two tokens mean "this places an order"; these move collateral,
-                  and a green button that is not Buy sitting under Buy is the
-                  worst thing this column could do. They take the neutral
-                  surface tokens instead, filled for Top up and outlined for
-                  Withdraw, which puts them a clear step below the saturated
-                  pair without making either look disabled. */}
-              <div className="flex w-full items-start gap-2 border-t border-white/10 pt-3">
-                <button
-                  type="button"
-                  onClick={() => setFundOpen(true)}
-                  disabled={!trading.walletId || busy}
-                  // When the entered collateral outruns the HyperCore balance the
-                  // button takes the same kash accent as the ticket's "may bridge"
-                  // advisory, so the note and the way to clear it read as one
-                  // thing. The order still places either way; this only makes
-                  // funding up front the obvious move.
-                  className={`bg-surface-strong flex h-12 min-w-0 flex-1 shrink-0 cursor-pointer items-center justify-center rounded-3xl border-2 font-[family-name:var(--font-sportsbook)] text-[16px] font-semibold transition-all hover:bg-white/16 disabled:cursor-not-allowed disabled:opacity-45 ${
-                    emphasizeTopUp
-                      ? "border-kash text-kash shadow-[0_0_0_3px_rgba(255,214,47,0.18)]"
-                      : "border-hairline text-white"
-                  }`}
-                >
-                  {trading.walletId ? t("topUp") : t("topUpPreparing")}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setWithdrawOpen(true)}
-                  disabled={!trading.walletId || busy || collateralBalance <= 0n}
-                  className="border-hairline hover:bg-surface flex h-12 min-w-0 flex-1 shrink-0 cursor-pointer items-center justify-center rounded-3xl border-2 bg-transparent font-[family-name:var(--font-sportsbook)] text-[16px] font-semibold text-white transition-colors disabled:cursor-not-allowed disabled:opacity-45"
-                >
-                  {t("withdraw")}
-                </button>
-              </div>
 
               <HyperliquidFundModal
                 open={fundOpen}

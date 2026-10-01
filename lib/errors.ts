@@ -31,6 +31,16 @@ export function isConflictError(e: unknown): boolean {
   return gateway.status === 409 || gateway.code === "CONFLICT";
 }
 
+// Thrown when a legacy (old Privy identity) call is attempted without a legacy
+// session — the migration's sweep needs the user signed in to the old account.
+export class LegacySessionError extends Error {
+  readonly code = "LEGACY_SESSION";
+  constructor() {
+    super("Sign in to your old account to continue.");
+    this.name = "LegacySessionError";
+  }
+}
+
 /**
  * The trade service's failure codes (its frontend contract, "Important
  * errors", plus the relay's own codes and the swap lifecycle's terminal
@@ -90,13 +100,6 @@ export function requestIdOf(e: unknown): string | null {
   if (!e || typeof e !== "object") return null;
   const id = (e as { requestId?: unknown }).requestId;
   return typeof id === "string" && id.length > 0 ? id : null;
-}
-
-// The support reference, as it is shown beside a message and in fine print.
-// "Ref:" is left untranslated on purpose: it is a token support searches for.
-function withRef(copy: string, e: unknown): string {
-  const id = requestIdOf(e);
-  return id ? `${copy} Ref: ${id}` : copy;
 }
 
 function looksSafeServerMessage(message: string): boolean {
@@ -200,13 +203,21 @@ export function friendlyError(
 ): string {
   // Trade service failures are decided by code, before any text rule below
   // could keep a "safe-looking" upstream sentence.
+  // The message is the sentence alone. The request id is a support token, not
+  // something to read: it already rides to Watchtower on every upstream
+  // failure, and the surfaces that want it on screen render it as fine print
+  // through supportDetail rather than inside the sentence.
   const tradeKey = tradeErrorKey(e);
-  if (tradeKey) return withRef(translate ? translate(tradeKey) : fallback, e);
+  if (tradeKey) return translate ? translate(tradeKey) : fallback;
 
   const raw = text(e).trim();
   const m = raw.toLowerCase();
   if (!m) return fallback;
   const gateway = gatewayMeta(e);
+
+  if (/access token comes from a provider this service does not accept/.test(m)) {
+    return "Your session needs to be refreshed. Sign in again and retry.";
+  }
 
   // The Solana sell executor already replaced the stale amount with confirmed
   // chain state. Tell the user why another confirmation is required instead
@@ -234,10 +245,10 @@ export function friendlyError(
   ) {
     return "You cancelled the request, so nothing was sent.";
   }
-  // The chess cashier has its own internal balance. Preserve that distinction
-  // so a withdrawal failure doesn't read like a wallet/allowance problem.
+  // Generic balance conflicts are shared by several games. Product-aware
+  // surfaces replace this with their own balance name.
   if (/insufficient available balance|player balance insufficient/.test(m)) {
-    return "You don't have enough in your chess balance for that. Deposit more USDC or choose a smaller amount.";
+    return "Your available balance is too low for that. Add funds or choose a smaller amount.";
   }
   if (/house reserve insufficient/.test(m)) {
     return "Stockfish staking is temporarily unavailable because the reward reserve is low. You can still play a free game.";

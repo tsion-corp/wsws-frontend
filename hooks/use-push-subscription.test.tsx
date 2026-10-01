@@ -4,12 +4,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const apiFetch = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/api", () => ({ apiFetch }));
 
-const privy = vi.hoisted(() => ({
+const session = vi.hoisted(() => ({
   ready: true,
   authenticated: true,
-  user: { id: "did:privy:alice" } as { id: string } | null,
+  userId: "did:privy:alice" as string | null,
+  evmAddress: null as string | null,
+  solanaAddress: null as string | null,
+  profile: { name: "u", email: "", avatarSeed: "u" },
+  logout: async () => {},
 }));
-vi.mock("@privy-io/react-auth", () => ({ usePrivy: () => privy }));
+vi.mock("@/hooks/use-auth-session", () => ({ useAuthSession: () => session }));
 
 vi.mock("next-intl", () => ({
   useTranslations: () => (key: string) => key,
@@ -175,9 +179,9 @@ describe("usePushSubscription", () => {
     apiFetch.mockImplementation(async (url: string) => route(url));
     workerListeners.clear();
     window.localStorage.clear();
-    privy.ready = true;
-    privy.authenticated = true;
-    privy.user = { id: ALICE };
+    session.ready = true;
+    session.authenticated = true;
+    session.userId = ALICE;
     current = null;
     legacy = null;
     legacyRegistrations = [];
@@ -442,8 +446,8 @@ describe("usePushSubscription", () => {
   });
 
   it("does nothing at all while signed out", async () => {
-    privy.user = null;
-    privy.authenticated = false;
+    session.userId = null;
+    session.authenticated = false;
     const { result } = renderHook(() => usePushSubscription());
 
     await act(async () => {});

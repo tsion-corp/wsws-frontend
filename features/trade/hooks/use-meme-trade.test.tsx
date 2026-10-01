@@ -14,46 +14,37 @@ const api = vi.hoisted(() => ({
   quoteSolanaSwap: vi.fn(),
   registerSolanaSubmission: vi.fn(),
 }));
-const solana = vi.hoisted(() => ({
-  wallets: [] as { address: string }[],
-  send: vi.fn(),
-}));
+const solana = vi.hoisted(() => ({ send: vi.fn() }));
 const chain = vi.hoisted(() => ({
   evmSend: vi.fn(),
   readBaseTokenBalance: vi.fn(),
   applyReceipt: vi.fn(),
 }));
 
-vi.mock("@privy-io/react-auth", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@privy-io/react-auth")>()),
-  getAccessToken: vi.fn(async () => "token"),
-  usePrivy: () => ({
-    user: {
-      id: "did:privy:u1",
-      linkedAccounts: [
-        {
-          type: "wallet",
-          chainType: "ethereum",
-          walletClientType: "privy",
-          connectorType: "embedded",
-          address: "0xabc0000000000000000000000000000000000001",
-        },
-        {
-          type: "wallet",
-          chainType: "solana",
-          walletClientType: "privy",
-          connectorType: "embedded",
-          address: "So1WalletCaseSensitive11111111111111111111",
-        },
-      ],
-    },
+vi.mock("@/hooks/use-auth-session", () => ({
+  useAuthSession: () => ({
+    ready: true,
+    authenticated: true,
+    evmAddress: "0xabc0000000000000000000000000000000000001",
+    solanaAddress: "So1WalletCaseSensitive11111111111111111111",
   }),
-  useSignMessage: () => ({ signMessage: vi.fn(async () => ({ signature: "0xsig" })) }),
 }));
-vi.mock("@privy-io/react-auth/solana", () => ({
-  useSignMessage: () => ({ signMessage: vi.fn() }),
-  useWallets: () => ({ wallets: solana.wallets }),
+// One Decane wallet signs for both chains; the ownership proof is a message
+// signature, so that is all this needs to stub.
+// `uid` is the subject the trade service links a wallet to, and the linked
+// cache is keyed on it; the fixture below writes entries under the same id.
+const UID = "u-1111";
+const TOKEN = `h.${btoa(JSON.stringify({ uid: UID })).replace(/=+$/, "")}.s`;
+vi.mock("decane-connect-kit", () => ({
+  useSocialWallet: () => ({
+    isConnected: true,
+    isUnlocked: true,
+    unlock: vi.fn(async () => {}),
+    signMessage: vi.fn(async () => "0xsig"),
+    getAccessToken: () => TOKEN,
+  }),
 }));
+vi.mock("@/lib/decane", () => ({ ensureUnlocked: vi.fn(async () => {}) }));
 vi.mock("@/hooks/use-evm-send", () => ({
   useEvmSend: () => chain.evmSend,
   useEvmSendWithReceipt: () => chain.evmSend,
@@ -81,6 +72,7 @@ vi.mock("@/lib/meme/api", async (importOriginal) => {
 import {
   useMemePreview,
   useMemeTrade,
+  usePreviewRelink,
   tradeRef,
   type TradeResult,
 } from "@/features/trade/hooks/use-meme-trade";
@@ -134,8 +126,8 @@ describe("useMemeTrade on Base when the service records a delivered trade as fai
   beforeEach(() => {
     vi.useFakeTimers();
     window.localStorage.setItem(
-      "wsws.meme-linked.v1",
-      JSON.stringify([`did:privy:u1:${WALLET.toLowerCase()}`])
+      "wsws.meme-linked.v3",
+      JSON.stringify([`${UID}:${WALLET.toLowerCase()}`])
     );
     api.quoteSwap.mockResolvedValue(quote);
     api.registerSubmission.mockResolvedValue({ swapId: "swap-1", status: "SUBMITTED" });
@@ -167,6 +159,9 @@ describe("useMemeTrade on Base when the service records a delivered trade as fai
       outcome: "delivered",
       swapId: "swap-1",
       requestId: null,
+      // This quote states no amounts, so there is nothing to price it by.
+      amounts: null,
+      txHash: "0xswap",
     });
     expect(result.current.phase).toBe("delivered");
     expect(result.current.received).toEqual({ amount: "1.96", symbol: "USDC" });
@@ -201,7 +196,7 @@ describe("useMemeTrade on Base when the service records a delivered trade as fai
     });
     expect(analytics.track).toHaveBeenCalledWith(
       "trade_recording_mismatch",
-      expect.objectContaining({ swap_id: "swap-1", recorded: "FAILED", hash: "0xswap" })
+      expect.objectContaining({ swap_id: "swap-1", recorded: "FAILED", tx_hash: "0xswap" })
     );
   });
 
@@ -224,6 +219,102 @@ describe("useMemeTrade on Base when the service records a delivered trade as fai
   });
 });
 
+// What a trade reports to analytics comes from the swap itself: the quote's
+// exact input leg, and the receipt for what arrived. A sale's `amount_usd` is
+// the USDC it paid out, never the number of tokens sold.
+describe("useMemeTrade prices the trade it made", () => {
+  const priced = {
+    ...quote,
+    side: "SELL",
+    sellAmountAtomic: "4230106143000000000000",
+    expectedBuyAmountAtomic: "2000000",
+    minimumBuyAmountAtomic: "1980000",
+  };
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    window.localStorage.setItem(
+      "wsws.meme-linked.v1",
+      JSON.stringify([`did:privy:u1:${WALLET.toLowerCase()}`])
+    );
+    api.quoteSwap.mockResolvedValue(priced);
+    api.registerSubmission.mockResolvedValue({ swapId: "swap-1", status: "SUBMITTED" });
+    chain.evmSend.mockResolvedValue(delivered(USDC, 1_960_000n));
+    api.fetchSwapStatus.mockResolvedValue({ swapId: "swap-1", status: "CONFIRMED", updatedAt: "" });
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.clearAllMocks();
+  });
+
+  it("reports a sale as the USDC the receipt proves, with the tokens as the quantity", async () => {
+    const { result } = renderHook(() => useMemeTrade(), { wrapper: tradeWrapper });
+    let outcome: Promise<TradeResult>;
+    await act(async () => {
+      outcome = result.current.trade({
+        side: "SELL",
+        tokenAddress: "0xc0ffee",
+        amount: "4230.106143",
+        chainId: 8453,
+      });
+      await vi.runAllTimersAsync();
+    });
+    await expect(outcome!).resolves.toEqual({
+      outcome: "confirmed",
+      swapId: "swap-1",
+      requestId: null,
+      amounts: {
+        amount_usd: 1.96,
+        token_quantity: 4230.106143,
+        fill_price_usd: 0.000463,
+        amount_source: "fill",
+      },
+      txHash: "0xswap",
+    });
+  });
+
+  it("says when the swap has been submitted, once, with the swap id", async () => {
+    const onSubmitted = vi.fn();
+    const { result } = renderHook(() => useMemeTrade(), { wrapper: tradeWrapper });
+    await act(async () => {
+      void result.current.trade({
+        side: "SELL",
+        tokenAddress: "0xc0ffee",
+        amount: "4230.106143",
+        chainId: 8453,
+        onSubmitted,
+      });
+      await vi.runAllTimersAsync();
+    });
+    expect(onSubmitted).toHaveBeenCalledTimes(1);
+    expect(onSubmitted).toHaveBeenCalledWith("swap-1");
+  });
+
+  it("falls back to the quote's expected proceeds when the receipt shows no payment", async () => {
+    chain.evmSend.mockResolvedValue({ hash: "0xswap", logs: [] });
+    const { result } = renderHook(() => useMemeTrade(), { wrapper: tradeWrapper });
+    let outcome: Promise<TradeResult>;
+    await act(async () => {
+      outcome = result.current.trade({
+        side: "SELL",
+        tokenAddress: "0xc0ffee",
+        amount: "4230.106143",
+        chainId: 8453,
+      });
+      await vi.runAllTimersAsync();
+    });
+    await expect(outcome!).resolves.toMatchObject({
+      outcome: "confirmed",
+      amounts: {
+        amount_usd: 2,
+        token_quantity: 4230.106143,
+        fill_price_usd: 0.000473,
+        amount_source: "quote",
+      },
+    });
+  });
+});
+
 // The production recording of 2026-09-09: a two-call quote (approval, then
 // the swap). Call 0 registers 201. By the time call 1 registers, the service
 // has verified the approval, failed its transaction-target check on the
@@ -243,8 +334,8 @@ describe("useMemeTrade on Base when the service refuses the second registration"
   beforeEach(() => {
     vi.useFakeTimers();
     window.localStorage.setItem(
-      "wsws.meme-linked.v1",
-      JSON.stringify([`did:privy:u1:${WALLET.toLowerCase()}`])
+      "wsws.meme-linked.v3",
+      JSON.stringify([`${UID}:${WALLET.toLowerCase()}`])
     );
     api.quoteSwap.mockResolvedValue(twoCalls);
     api.registerSubmission
@@ -283,6 +374,8 @@ describe("useMemeTrade on Base when the service refuses the second registration"
       outcome: "delivered",
       swapId: "swap-1",
       requestId: "req-409",
+      amounts: null,
+      txHash: "0xswap",
     });
     expect(result.current.phase).toBe("delivered");
     expect(result.current.error).toBeNull();
@@ -329,8 +422,8 @@ describe("useMemeTrade status polling", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     window.localStorage.setItem(
-      "wsws.meme-linked.v1",
-      JSON.stringify([`did:privy:u1:${WALLET.toLowerCase()}`])
+      "wsws.meme-linked.v3",
+      JSON.stringify([`${UID}:${WALLET.toLowerCase()}`])
     );
     api.quoteSwap.mockResolvedValue(quote);
     api.registerSubmission.mockResolvedValue({ swapId: "swap-1", status: "SUBMITTED" });
@@ -413,6 +506,8 @@ describe("useMemeTrade status polling", () => {
       outcome: "pending",
       swapId: "swap-1",
       requestId: null,
+      amounts: null,
+      txHash: "0xhash",
     });
     expect(result.current.phase).toBe("pending");
     expect(result.current.error).toBeNull();
@@ -433,8 +528,8 @@ describe("useMemeTrade on Base when only a user-operation hash comes back", () =
   beforeEach(() => {
     vi.useFakeTimers();
     window.localStorage.setItem(
-      "wsws.meme-linked.v1",
-      JSON.stringify([`did:privy:u1:${WALLET.toLowerCase()}`])
+      "wsws.meme-linked.v3",
+      JSON.stringify([`${UID}:${WALLET.toLowerCase()}`])
     );
     api.quoteSwap.mockResolvedValue(quote);
     api.registerSubmission.mockResolvedValue({ swapId: "swap-1", status: "SUBMITTED" });
@@ -491,8 +586,8 @@ describe("useMemeTrade quote retries", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     window.localStorage.setItem(
-      "wsws.meme-linked.v1",
-      JSON.stringify([`did:privy:u1:${WALLET.toLowerCase()}`])
+      "wsws.meme-linked.v3",
+      JSON.stringify([`${UID}:${WALLET.toLowerCase()}`])
     );
     api.registerSubmission.mockResolvedValue({ swapId: "swap-1", status: "SUBMITTED" });
     chain.evmSend.mockResolvedValue({ hash: "0xhash", logs: [] });
@@ -704,10 +799,9 @@ describe("useMemeTrade on Solana", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     window.localStorage.setItem(
-      "wsws.meme-linked.v1",
-      JSON.stringify([`did:privy:u1:solana:${SOL_WALLET}`])
+      "wsws.meme-linked.v3",
+      JSON.stringify([`${UID}:solana:${SOL_WALLET}`])
     );
-    solana.wallets = [{ address: SOL_WALLET }];
     solana.send.mockResolvedValue("5igSignature");
     api.registerSolanaSubmission.mockResolvedValue({ swapId: "sol-1", status: "SUBMITTED" });
     api.fetchSwapStatus.mockResolvedValue({ swapId: "sol-1", status: "CONFIRMED", updatedAt: "" });
@@ -715,7 +809,6 @@ describe("useMemeTrade on Solana", () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.clearAllMocks();
-    solana.wallets = [];
   });
 
   async function runSolanaBuy() {
@@ -745,6 +838,19 @@ describe("useMemeTrade on Solana", () => {
     const result = await runSolanaBuy();
     expect(result.current.quotedFee).toBeNull();
   });
+
+  /*
+    A swap that opens an associated token account names its rent payer inside
+    that instruction, and the sponsor taking the fee-payer seat does not change
+    it. Without prefundRent the rent falls on the taker's own wallet, which for
+    somebody selling a token is the wallet with no SOL in it — seen live as
+    "Transfer: insufficient lamports 861525, need 1488440" on a USDC sell.
+  */
+  it("asks the sponsor to cover token-account rent, not the taker", async () => {
+    api.quoteSolanaSwap.mockResolvedValue(solanaQuote());
+    await runSolanaBuy();
+    expect(solana.send).toHaveBeenCalledWith(expect.objectContaining({ prefundRent: true }));
+  });
 });
 
 // The contract: "refresh summary and open positions after a swap reaches
@@ -757,8 +863,8 @@ describe("useMemeTrade refreshes the service portfolio", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     window.localStorage.setItem(
-      "wsws.meme-linked.v1",
-      JSON.stringify([`did:privy:u1:${WALLET.toLowerCase()}`])
+      "wsws.meme-linked.v3",
+      JSON.stringify([`${UID}:${WALLET.toLowerCase()}`])
     );
     api.quoteSwap.mockResolvedValue(quote);
     api.registerSubmission.mockResolvedValue({ swapId: "swap-1", status: "SUBMITTED" });
@@ -809,10 +915,9 @@ describe("useMemeTrade refreshes the service portfolio", () => {
   it("invalidates on a CONFIRMED Solana swap too", async () => {
     const SOL_WALLET = "So1WalletCaseSensitive11111111111111111111";
     window.localStorage.setItem(
-      "wsws.meme-linked.v1",
-      JSON.stringify([`did:privy:u1:solana:${SOL_WALLET}`])
+      "wsws.meme-linked.v3",
+      JSON.stringify([`${UID}:solana:${SOL_WALLET}`])
     );
-    solana.wallets = [{ address: SOL_WALLET }];
     solana.send.mockResolvedValue("5igSignature");
     api.quoteSolanaSwap.mockResolvedValue({
       swapId: "sol-1",
@@ -832,8 +937,157 @@ describe("useMemeTrade refreshes the service portfolio", () => {
       });
       await vi.runAllTimersAsync();
     });
-    solana.wallets = [];
     expect(result.current.phase).toBe("confirmed");
     expect(invalidate).toHaveBeenCalledWith(PORTFOLIO);
+  });
+});
+
+describe("the wallet-link cache is keyed by identity", () => {
+  // v2 keyed on the wallet alone, so an entry said "linked" without saying to
+  // whom. A second identity on the same device then skipped the link it
+  // actually needed, and the quote came back WALLET_OWNERSHIP_MISMATCH:
+  // "Wallet is not linked to the authenticated identity."
+  beforeEach(() => {
+    vi.useFakeTimers();
+    // Call history accumulates across tests in this file; these assertions are
+    // about whether THIS test signed, so the counters start clean.
+    api.createWalletChallenge.mockClear();
+    api.verifyWallet.mockClear();
+    api.createWalletChallenge.mockResolvedValue({ challengeId: "c1", message: "sign me" });
+    api.verifyWallet.mockResolvedValue({ ok: true });
+    api.quoteSwap.mockResolvedValue(quote);
+    api.registerSubmission.mockResolvedValue({ swapId: "swap-1", status: "SUBMITTED" });
+    api.fetchSwapStatus.mockResolvedValue({ status: "CONFIRMED", swapId: "swap-1" });
+    chain.evmSend.mockResolvedValue({ hash: "0xhash", receipt: { logs: [] } });
+  });
+  afterEach(() => vi.useRealTimers());
+
+  it("links again when the cached entry belongs to another identity", async () => {
+    window.localStorage.setItem(
+      "wsws.meme-linked.v3",
+      JSON.stringify([`someone-else:${WALLET.toLowerCase()}`])
+    );
+
+    const { result } = renderHook(() => useMemeTrade(), { wrapper: tradeWrapper });
+    await act(async () => {
+      void result.current
+        .trade({ side: "SELL", tokenAddress: "0xc0ffee", amount: "1", chainId: 8453 })
+        .catch(() => {});
+      await vi.runAllTimersAsync();
+    });
+
+    expect(api.createWalletChallenge).toHaveBeenCalled();
+  });
+
+  it("trusts a cached entry for this identity and skips the signature", async () => {
+    window.localStorage.setItem(
+      "wsws.meme-linked.v3",
+      JSON.stringify([`${UID}:${WALLET.toLowerCase()}`])
+    );
+
+    const { result } = renderHook(() => useMemeTrade(), { wrapper: tradeWrapper });
+    await act(async () => {
+      void result.current
+        .trade({ side: "SELL", tokenAddress: "0xc0ffee", amount: "1", chainId: 8453 })
+        .catch(() => {});
+      await vi.runAllTimersAsync();
+    });
+
+    expect(api.createWalletChallenge).not.toHaveBeenCalled();
+  });
+});
+
+// Reported 2026-09-20: a user could not sell their DOGE. Every preview row read
+// "—" under "This wallet isn't linked to your account yet", and it never
+// recovered. The browser held a stale "already linked" hint, so the relink the
+// preview asks for returned without doing anything, and the next preview failed
+// the same way, forever.
+describe("useMemeTrade linking for a preview the service refused", () => {
+  beforeEach(() => {
+    window.localStorage.setItem(
+      "wsws.meme-linked.v3",
+      JSON.stringify([`${UID}:${WALLET.toLowerCase()}`])
+    );
+    api.createWalletChallenge.mockResolvedValue({
+      challengeId: "c1",
+      message: "m",
+      expiresAt: "",
+    });
+    api.verifyWallet.mockResolvedValue({ walletAddress: WALLET });
+  });
+  afterEach(() => {
+    window.localStorage.clear();
+    vi.clearAllMocks();
+  });
+
+  it("links again even when the browser believes the wallet is already linked", async () => {
+    const { result } = renderHook(() => useMemeTrade(), { wrapper: tradeWrapper });
+    await act(async () => {
+      await result.current.linkForPreview(8453);
+    });
+    expect(api.createWalletChallenge).toHaveBeenCalledWith(WALLET);
+    expect(api.verifyWallet).toHaveBeenCalled();
+    expect(result.current.phase).toBe("idle");
+  });
+
+  // The hint is per wallet. Linking Base again must not throw away the Solana
+  // wallet's hint and charge the user a second signature for an unrelated chain.
+  it("keeps the other chain's hint", async () => {
+    window.localStorage.setItem(
+      "wsws.meme-linked.v3",
+      JSON.stringify([`${UID}:${WALLET.toLowerCase()}`, `${UID}:solana:SoLwallet`])
+    );
+    const { result } = renderHook(() => useMemeTrade(), { wrapper: tradeWrapper });
+    await act(async () => {
+      await result.current.linkForPreview(8453);
+    });
+    const kept = JSON.parse(window.localStorage.getItem("wsws.meme-linked.v3") ?? "[]") as string[];
+    expect(kept).toContain(`${UID}:solana:SoLwallet`);
+  });
+});
+
+// Reported 2026-09-19: a user could not sell, and it never recovered.
+describe("useMemeTrade relinking after a preview the service refused", () => {
+  const mismatch = () => new TradeApiError("WALLET_OWNERSHIP_MISMATCH", "not linked", 403);
+
+  afterEach(() => {
+    window.localStorage.clear();
+    vi.clearAllMocks();
+  });
+
+  it("tries again after a link attempt fails", async () => {
+    const link = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("wallet still connecting"))
+      .mockResolvedValueOnce(undefined);
+    const refetch = vi.fn();
+
+    const { rerender } = renderHook(
+      ({ error }: { error: unknown }) => usePreviewRelink(error, 8453, link, refetch),
+      { initialProps: { error: mismatch() as unknown } }
+    );
+    await waitFor(() => expect(link).toHaveBeenCalledTimes(1));
+
+    rerender({ error: mismatch() });
+
+    await waitFor(() => expect(link).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(refetch).toHaveBeenCalled());
+  });
+
+  // The original guard: after a successful link, a refusal is a real one.
+  it("does not link twice when the link succeeded and the refusal stands", async () => {
+    const link = vi.fn().mockResolvedValue(undefined);
+    const refetch = vi.fn();
+
+    const { rerender } = renderHook(
+      ({ error }: { error: unknown }) => usePreviewRelink(error, 8453, link, refetch),
+      { initialProps: { error: mismatch() as unknown } }
+    );
+    await waitFor(() => expect(link).toHaveBeenCalledTimes(1));
+
+    rerender({ error: mismatch() });
+
+    await waitFor(() => expect(refetch).toHaveBeenCalled());
+    expect(link).toHaveBeenCalledTimes(1);
   });
 });

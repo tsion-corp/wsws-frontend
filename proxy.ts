@@ -1,4 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
+import { RELAY_PATH } from "@/lib/analytics/relay";
+import { isReferralCode } from "@/lib/referral-code";
 
 // The route guard behind the launch gate (see lib/launch-gate.ts). While the
 // site is closed, by the clock or by ALLOW_ACCESS=false, every request except
@@ -57,8 +59,59 @@ function closedResponse(request: NextRequest): NextResponse {
   return response;
 }
 
+// Analytics from whatever page the closed site serves (the landing page, the
+// maintenance notice) goes through the relay. Turned away, the SDK would get
+// HTML back instead of Mixpanel's answer and retry the batch forever.
+function isAnalyticsRelay(pathname: string): boolean {
+  return pathname === RELAY_PATH || pathname.startsWith(`${RELAY_PATH}/`);
+}
+
+// A shared link carries its sharer's referral code as ?ref=<code>, on whatever
+// page it points at: a market, a Last Man round, a gist room. The /r/<code>
+// landing route is only one way in, and it is the one nobody uses when they
+// are sharing a game rather than an invite.
+//
+// The code lands in the same cookie the landing route writes, so the claim
+// afterwards is the one flow, and the query is stripped from the address so a
+// second share from this visitor cannot carry somebody else's code onward.
+//
+// First writer wins: a visitor who already has a code keeps it. The referral
+// belongs to whoever brought them first, and a later link must not take it.
+const REF_QUERY = "ref";
+const REF_COOKIE = "ark_ref";
+const REF_MAX_AGE_SECONDS = 30 * 24 * 60 * 60;
+
+function captureReferral(request: NextRequest): NextResponse | null {
+  // Pages only. The matcher below also covers /api, and answering a fetch with
+  // a redirect would break the call rather than credit anybody; a referral
+  // arrives on a page somebody opened, never on a request the app made itself.
+  if (request.nextUrl.pathname.startsWith("/api/")) return null;
+  const code = request.nextUrl.searchParams.get(REF_QUERY);
+  if (!code) return null;
+
+  const normalized = code.trim().toLowerCase();
+  const url = request.nextUrl.clone();
+  url.searchParams.delete(REF_QUERY);
+  const response = NextResponse.redirect(url);
+  if (!isReferralCode(normalized) || request.cookies.has(REF_COOKIE)) return response;
+
+  // Readable by client script on purpose: the claim hook needs the value.
+  response.cookies.set(REF_COOKIE, normalized, {
+    maxAge: REF_MAX_AGE_SECONDS,
+    path: "/",
+    sameSite: "lax",
+  });
+  return response;
+}
+
 export function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
+  if (isAnalyticsRelay(pathname)) return NextResponse.next();
+
+  // Before the gates below: a code on a closed site is still worth keeping, and
+  // the redirect this returns carries the visitor to the same page without it.
+  const referral = captureReferral(request);
+  if (referral) return referral;
 
   if (underMaintenance()) {
     if (MAINTENANCE_OPEN_PATHS.has(pathname)) return NextResponse.next();
@@ -67,7 +120,11 @@ export function proxy(request: NextRequest) {
 
   if (!beforeLaunch()) return NextResponse.next();
   if (OPEN_PATHS.has(pathname)) return NextResponse.next();
-  return NextResponse.redirect(new URL("/", request.url));
+  // The query rides along: a campaign link's utm_* tags are what Mixpanel
+  // attributes the visit by, and the landing page is where it reads them.
+  const home = new URL("/", request.url);
+  home.search = request.nextUrl.search;
+  return NextResponse.redirect(home);
 }
 
 export const config = {

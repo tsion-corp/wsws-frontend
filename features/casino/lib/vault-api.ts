@@ -14,6 +14,7 @@ import {
   isVaultGame,
   onlyVaultActivities,
   onlyVaultGames,
+  onlyLeaderboardWinners,
   onlyVaultWinners,
 } from "@/features/casino/lib/vault-game";
 import { vaultLog } from "@/features/casino/lib/last-standing/log";
@@ -43,6 +44,22 @@ export interface TokenAmount {
 // the clock is derived from it rather than counted down from a snapshot.
 export interface VaultGame {
   gameId: number;
+  /**
+   * The starter's own name for the game, and an optional description. Both
+   * cosmetic, both absent on every game started before naming shipped, and
+   * both other people's text: rendered, never interpreted.
+   */
+  title?: string;
+  description?: string;
+  /**
+   * The starter chose to keep this game off the lobby. Served on every row
+   * since the v5.1 privacy upgrade; games started before it read false, which
+   * is what those games always were.
+   *
+   * It is NOT access control. Anyone holding a game id can still join, and the
+   * vault says so plainly. It decides listing, nothing else.
+   */
+  isPrivate: boolean;
   starter: string;
   king: string;
   pot: TokenAmount;
@@ -58,6 +75,21 @@ export interface VaultGame {
 // starter's share included when the same wallet opened the game. The three
 // optional splits arrived with the 2026-09-10 service; older rows carry only
 // `toWinner`.
+// An amount without the service's own USD figures, which are native-only by
+// its contract and so are recomputed here anyway (see lib/last-standing/pricing).
+export type PaidAmount = Pick<TokenAmount, "amount" | "raw" | "tokenSymbol" | "token" | "decimals">;
+
+// What the leaderboard route serves: a winner trimmed to what the board reads.
+// Not a VaultWinner, which also carries the pot, the splits and the settlement
+// transaction that no rank depends on.
+export interface LeaderboardWinner {
+  gameId: number;
+  winner: string;
+  // What settle() actually sent that wallet, the starter's share included.
+  paid: PaidAmount;
+  settledAt: string | number | null;
+}
+
 export interface VaultWinner {
   gameId: number;
   winner: string;
@@ -203,7 +235,7 @@ export interface VaultPlayer {
   gamesStarted: number;
   gamesWon: number;
   paidWei: string;
-  paid: TokenAmount;
+  paid: PaidAmount;
   lastGameId: number | null;
 }
 
@@ -235,6 +267,49 @@ export async function registerVaultTransaction(hash: string): Promise<void> {
   }
 }
 
+/**
+ * Names a game. Keyed on the transaction hash, because the contract assigns
+ * the gameId only when the transaction mines.
+ *
+ * Cosmetic and non-fatal, like registerVaultTransaction above: the player has
+ * already paid and the game is already open, so a refused name leaves a game
+ * called "Game 246" rather than a game that failed. The failure is logged, not
+ * silenced.
+ */
+export async function submitGameMetadata(input: {
+  txHash: string;
+  title: string;
+  description?: string;
+  signature: string;
+  timestamp: number;
+  /**
+   * The address that signed. Required: the vault recovers an address from the
+   * signature and compares it to this one, because a wrong message recovers a
+   * DIFFERENT address rather than failing. Omitting it refused every
+   * submission as a mismatch, silently, since naming is fire and forget.
+   */
+  signer: string;
+}): Promise<boolean> {
+  try {
+    await vault.publicPost("/games/metadata", {
+      txHash: input.txHash,
+      title: input.title,
+      ...(input.description ? { description: input.description } : {}),
+      signer: input.signer,
+      signature: input.signature,
+      timestamp: input.timestamp,
+    });
+    vaultLog("REST POST /games/metadata", { txHash: input.txHash });
+    return true;
+  } catch (error) {
+    vaultLog("REST POST /games/metadata failed", {
+      txHash: input.txHash,
+      error: String(error),
+    });
+    return false;
+  }
+}
+
 export async function fetchVaultWinners(): Promise<VaultWinner[]> {
   const data = await vault.get<{ winners: unknown }>("/game/winners");
   const rows = onlyVaultWinners(data.winners);
@@ -246,6 +321,22 @@ export async function fetchVaultWinners(): Promise<VaultWinner[]> {
   return rows;
 }
 
+// Every winner the vault has recorded, for the all-time board. The service
+// pages this feed; the walk happens in our own route (app/api/vault/leaderboard)
+// so a reader makes one request rather than sequencing six.
+export async function fetchAllVaultWinners(): Promise<LeaderboardWinner[]> {
+  const res = await fetch("/api/vault/leaderboard", { headers: { accept: "application/json" } });
+  if (!res.ok) throw new Error("The vault is unavailable right now.");
+  const body = (await res.json()) as { data?: { winners?: unknown } };
+  const rows = onlyLeaderboardWinners(body.data?.winners);
+  const total = Array.isArray(body.data?.winners) ? body.data.winners.length : 0;
+  if (rows.length !== total) {
+    console.warn(`[vault] dropped ${total - rows.length} leaderboard row(s) not in shape`);
+  }
+  vaultLog("REST /api/vault/leaderboard", { rows: rows.length });
+  return rows;
+}
+
 export async function fetchVaultActivities(): Promise<VaultActivity[]> {
   const data = await vault.get<{ activities: unknown }>("/game/activities");
   const rows = onlyVaultActivities(data.activities);
@@ -254,5 +345,27 @@ export async function fetchVaultActivities(): Promise<VaultActivity[]> {
     console.warn(`[vault] dropped ${total - rows.length} /game/activities row(s) not in shape`);
   }
   vaultLog("REST /game/activities", { rows: rows.length });
+  return rows;
+}
+
+/**
+ * One game's own feed, which is every row that game ever had.
+ *
+ * The cross-game `/game/activities` above is a recent-activity strip and is
+ * capped: it answered with 25 rows spanning 12 games, two per game. Filtering
+ * that down to one game gives a truncated feed, which is fine for a ticker and
+ * wrong for anything that counts, so a game's own page reads this instead and
+ * the lobby keeps the cheap global one.
+ */
+export async function fetchVaultGameActivities(gameId: number): Promise<VaultActivity[]> {
+  const data = await vault.get<{ activities: unknown }>(`/games/${gameId}/activities`);
+  const rows = onlyVaultActivities(data.activities);
+  const total = Array.isArray(data.activities) ? data.activities.length : 0;
+  if (rows.length !== total) {
+    console.warn(
+      `[vault] dropped ${total - rows.length} /games/${gameId}/activities row(s) not in shape`
+    );
+  }
+  vaultLog(`REST /games/${gameId}/activities`, { rows: rows.length });
   return rows;
 }

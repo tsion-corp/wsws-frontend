@@ -8,8 +8,10 @@ import {
   TRADE_ACTIVITY,
 } from "@/lib/api/schemas/trade.fixtures";
 
+// The hook reads the session through the Decane-backed seam now; the fixture
+// keeps its shape so the sign-in cases below are unchanged.
 const privy = vi.hoisted(() => ({ ready: true, authenticated: true }));
-vi.mock("@privy-io/react-auth", () => ({ usePrivy: () => privy }));
+vi.mock("@/hooks/use-auth-session", () => ({ useAuthSession: () => privy }));
 
 // The section's on-screen flag, driven by hand: the real one comes from an
 // IntersectionObserver, which jsdom does not have.

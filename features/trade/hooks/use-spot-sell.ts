@@ -1,22 +1,29 @@
 "use client";
 
+import { useAuthSession } from "@/hooks/use-auth-session";
+
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useTranslations } from "next-intl";
-import { BASE_CHAIN_ID } from "@/lib/meme/chain";
+import { BASE_CHAIN_ID, chainIdOfNetwork } from "@/lib/meme/chain";
 import { scopeOf } from "@/lib/portfolio/fresh-scope";
 import { networkForChainId } from "@/lib/trade-share";
 import { usePortfolio } from "@/hooks/use-portfolio";
 import { useSell } from "@/features/trade/hooks/use-sell";
+import { tradeRef, useMemeTrade } from "@/features/trade/hooks/use-meme-trade";
+import { swapRouteForSymbol } from "@/lib/spot-swap";
 import { savePendingRwaSettlement } from "@/lib/trade/pending-settlement";
 import { fromBaseUnits, toBaseUnits } from "@/lib/trade/math";
 import { maxSellable } from "@/lib/trade/gas-buffer";
-import { nativeSendCost } from "@/lib/trade/native-gas";
+import { canPayNativeFee, nativeSendCost } from "@/lib/trade/native-gas";
 import { SolanaBalanceChangedError } from "@/lib/trade/solana-balance";
 import { hasGasPolicyForNetwork } from "@/lib/trade/sponsored-evm";
 import { nativeSymbol, networkLabel } from "@/lib/trade/networks";
 import { toast } from "@/lib/toast";
 import { track } from "@/lib/analytics/mixpanel";
+import { TRADE_FAILURE, reasonFor } from "@/lib/analytics/failure-reason";
+import { pricedTradeAmounts } from "@/lib/analytics/trade-amounts";
+import { swapTradeFacts } from "@/features/trade/lib/trade-analytics";
 import { friendlyError, supportDetail, isStaleBalanceRevert } from "@/lib/errors";
 import type { SellPayload } from "@/lib/modal-types";
 
@@ -79,8 +86,24 @@ export function useSpotSell({
   const t = useTranslations("buySell");
   const portfolio = usePortfolio();
   const sell = useSell();
+  const memeTrade = useMemeTrade();
   const [busy, setBusy] = useState(false);
 
+  // A market Dextopus does not carry is bought through the Base swap engine
+  // (see use-spot-buy), so the sale has to leave by the same door. Matched on
+  // the holding itself, not just the symbol: the same ticker on another chain
+  // is a different asset and still sells through Dextopus.
+  const swapRoute = useMemo(() => {
+    const route = holding ? swapRouteForSymbol(holding.symbol) : null;
+    if (!route || !holding?.address) return null;
+    return route.tokenAddress.toLowerCase() === holding.address.toLowerCase() &&
+      route.chainId === chainIdOfNetwork(holding.network)
+      ? route
+      : null;
+  }, [holding]);
+
+  const session = useAuthSession();
+  const feePayer = session.evmAddress ?? undefined;
   const network = holding?.network ?? null;
   const nativeSym = network ? nativeSymbol(network) : null;
 
@@ -91,38 +114,38 @@ export function useSpotSell({
     ? hasGasPolicyForNetwork(network) || network === "solana-mainnet"
     : false;
 
+  const nativeBalance = useMemo(
+    () =>
+      portfolio.tokens.find(
+        (token) => token.network === network && token.symbol === nativeSym && token.address === null
+      )?.balance ?? 0,
+    [portfolio.tokens, network, nativeSym]
+  );
+
+  // Selling a chain's own gas token pays the fee out of the same balance, so
+  // the most that can be sold is the balance minus that fee.
+  const sellsNativeToken = holding !== null && holding.address === null && !sponsored;
+  // Measured wherever the sender pays, not only when selling the gas token, so
+  // the same figure answers "can this wallet afford to send at all". Gas moves
+  // with traffic, so it is re-read rather than frozen at the first reading.
+  const measuredGas = useQuery({
+    queryKey: ["nativeSendCost", network, holding?.address ?? null],
+    queryFn: () =>
+      nativeSendCost(network as string, {
+        tokenAddress: holding?.address ?? null,
+        from: feePayer,
+      }),
+    enabled: !sponsored && network !== null && nativeSym !== null,
+    staleTime: 15_000,
+    refetchInterval: 15_000,
+    retry: 1,
+  });
+
   // A chain whose native token we cannot name is treated as having gas: we
   // cannot prove the wallet is short of a token we cannot identify, and refusing
   // the sale on that guess blocks someone who is holding plenty.
-  const hasGas = useMemo(
-    () =>
-      sponsored ||
-      nativeSym === null ||
-      portfolio.tokens.some(
-        (token) => token.network === network && token.symbol === nativeSym && token.balance > 0
-      ),
-    [sponsored, portfolio.tokens, network, nativeSym]
-  );
-
-  /**
-   * Selling a chain's own gas token pays the fee out of the same balance, so the
-   * most that can be sold is the balance minus that fee. Reading the live cost
-   * makes the reserve the fee itself rather than a round number picked in
-   * advance.
-   *
-   * Gated on `sellsNativeToken`, so it never runs for the ordinary case, and
-   * held for 30 seconds. It is not a poll: one read, only when the asset being
-   * sold IS the chain's fee token, which is the only case whose maximum depends
-   * on it.
-   */
-  const sellsNativeToken = holding !== null && holding.address === null && !sponsored;
-  const measuredGas = useQuery({
-    queryKey: ["nativeSendCost", network],
-    queryFn: () => nativeSendCost(network as string),
-    enabled: sellsNativeToken && network !== null,
-    staleTime: 30_000,
-    retry: 1,
-  });
+  const hasGas =
+    sponsored || nativeSym === null || canPayNativeFee(nativeBalance, measuredGas.data);
 
   const maxSell = !holding
     ? 0
@@ -163,26 +186,106 @@ export function useSpotSell({
     if (value <= 0 || blockedReason !== null) return;
 
     setBusy(true);
+    // What the sale is worth at the price on screen. The swap engine replaces
+    // it with what the receipt proves; Dextopus reports no proceeds when it
+    // accepts the order, so there it stays the figure reported.
+    const priced = pricedTradeAmounts(
+      toBaseUnits(entered, holding.decimals),
+      holding.decimals,
+      holding.priceUsd
+    );
     track("trade_previewed", {
       vertical: "spot",
       asset: holding.symbol,
       side: "sell",
-      amount_usd: value * holding.priceUsd,
+      amount_usd: priced.amount_usd,
+      token_quantity: priced.token_quantity,
     });
     toastRef.current = toast.loading(t("sellingToast", { symbol: holding.symbol }));
+
+    if (swapRoute) {
+      try {
+        const result = await memeTrade.trade({
+          chainId: swapRoute.chainId,
+          side: "SELL",
+          tokenAddress: swapRoute.tokenAddress,
+          amount: entered,
+          slippageBps: SLIPPAGE_BPS,
+          onSubmitted: (swapId) =>
+            track("trade_submitted", {
+              vertical: "spot",
+              asset: holding.symbol,
+              side: "sell",
+              amount_usd: priced.amount_usd,
+              token_quantity: priced.token_quantity,
+              order_id: swapId,
+            }),
+        });
+        // Only the service's CONFIRMED is "sold". Delivered-but-unrecorded and
+        // pending say so, with the reference support will ask for.
+        const ref = tradeRef(result.swapId, result.requestId);
+        toast.success(
+          result.outcome === "delivered"
+            ? t("deliveredToast", { name: holding.symbol, ref })
+            : result.outcome === "pending"
+              ? t("pendingToast", { name: holding.symbol, ref })
+              : t("soldToast", { symbol: holding.symbol }),
+          { id: toastRef.current }
+        );
+        toastRef.current = undefined;
+        const facts = swapTradeFacts(result, priced);
+        if (facts) {
+          track("trade_completed", {
+            vertical: "spot",
+            asset: holding.symbol,
+            side: "sell",
+            ...facts,
+          });
+        }
+        onSold();
+        void portfolio.refetchUntilChanged(scopeOf(networkForChainId(BASE_CHAIN_ID)));
+      } catch (error) {
+        track("trade_failed", {
+          vertical: "spot",
+          asset: holding.symbol,
+          side: "sell",
+          ...reasonFor(TRADE_FAILURE, error),
+          amount_usd: priced.amount_usd,
+        });
+        toast.error(
+          `${friendlyError(error, t("sellFailedToast", { symbol: holding.symbol }))} ${supportDetail(error)}`.trim(),
+          { id: toastRef.current }
+        );
+        toastRef.current = undefined;
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
 
     try {
       // Clamp to the exact on-chain balance so a Max never sends more than the
       // wallet holds: the figure on screen is a rounded float, the clamp is not.
       const units = toBaseUnits(entered, holding.decimals);
       const max = BigInt(holding.rawBalance);
+      const sold = units < max ? units : max;
       const result = await sell.mutateAsync({
         network: holding.network,
         asset: holding.address,
         decimals: holding.decimals,
-        amount: units < max ? units : max,
+        amount: sold,
         slippageBps: SLIPPAGE_BPS,
         maxRequested,
+      });
+      // Accepted, not yet settled: Dextopus reports the sale's proceeds later.
+      const soldValue = pricedTradeAmounts(sold, holding.decimals, holding.priceUsd);
+      track("trade_submitted", {
+        vertical: "spot",
+        asset: holding.symbol,
+        side: "sell",
+        amount_usd: soldValue.amount_usd,
+        token_quantity: soldValue.token_quantity,
+        order_id: result.requestId,
       });
       savePendingRwaSettlement({
         requestId: result.requestId,
@@ -194,7 +297,8 @@ export function useSpotSell({
         vertical: "spot",
         asset: holding.symbol,
         side: "sell",
-        amount_usd: value * holding.priceUsd,
+        ...soldValue,
+        order_id: result.requestId,
       });
       toast.success(t("takesAMoment"), { id: toastRef.current });
       toastRef.current = undefined;
@@ -213,7 +317,13 @@ export function useSpotSell({
         // Refused for the balance itself, so our snapshot is behind the chain.
         void portfolio.refetch();
       }
-      track("trade_failed", { vertical: "spot", asset: holding.symbol, reason: "sell_failed" });
+      track("trade_failed", {
+        vertical: "spot",
+        asset: holding.symbol,
+        side: "sell",
+        ...reasonFor(TRADE_FAILURE, error),
+        amount_usd: priced.amount_usd,
+      });
       // The raw reason travels with the friendly line: a screenshot of this
       // toast has to be enough for someone to act on, which is what
       // supportDetail exists for.
@@ -228,7 +338,10 @@ export function useSpotSell({
   };
 
   return {
-    pending: busy || sell.isPending,
+    pending:
+      busy ||
+      sell.isPending ||
+      (swapRoute !== null && memeTrade.phase !== "idle" && memeTrade.phase !== "failed"),
     blockedReason,
     maxAmount,
     submit,

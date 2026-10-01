@@ -34,37 +34,37 @@ const api = vi.hoisted(() => ({
   fetchSwapStatus: vi.fn(),
 }));
 const solana = vi.hoisted(() => ({ wallets: [] as { address: string }[], send: vi.fn() }));
-const chain = vi.hoisted(() => ({ evmSend: vi.fn(), applyReceipt: vi.fn() }));
-
-vi.mock("@privy-io/react-auth", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@privy-io/react-auth")>()),
-  getAccessToken: vi.fn(async () => "token"),
-  usePrivy: () => ({
-    user: {
-      id: "did:privy:u1",
-      linkedAccounts: [
-        {
-          type: "wallet",
-          chainType: "ethereum",
-          walletClientType: "privy",
-          connectorType: "embedded",
-          address: "0xabc0000000000000000000000000000000000001",
-        },
-        {
-          type: "wallet",
-          chainType: "solana",
-          walletClientType: "privy",
-          connectorType: "embedded",
-          address: "So1WalletCaseSensitive11111111111111111111",
-        },
-      ],
-    },
-  }),
-  useSignMessage: () => ({ signMessage: vi.fn(async () => ({ signature: "0xsig" })) }),
+const chain = vi.hoisted(() => ({
+  evmSend: vi.fn(),
+  applyReceipt: vi.fn(),
+  readBaseTokenBalance: vi.fn(),
 }));
-vi.mock("@privy-io/react-auth/solana", () => ({
-  useSignMessage: () => ({ signMessage: vi.fn() }),
-  useWallets: () => ({ wallets: solana.wallets }),
+
+vi.mock("@/hooks/use-auth-session", () => ({
+  useAuthSession: () => ({
+    ready: true,
+    authenticated: true,
+    evmAddress: "0xabc0000000000000000000000000000000000001",
+    solanaAddress: "So1WalletCaseSensitive11111111111111111111",
+  }),
+}));
+// One Decane wallet signs for both chains; the ownership proof is a message
+// signature, so that is all this needs to stub. `uid` is the subject the
+// trade service links a wallet to, and the linked cache is keyed on it.
+const UID = "u-1111";
+const TOKEN = `h.${btoa(JSON.stringify({ uid: UID })).replace(/=+$/, "")}.s`;
+vi.mock("decane-connect-kit", () => ({
+  useSocialWallet: () => ({
+    isConnected: true,
+    isUnlocked: true,
+    unlock: vi.fn(async () => {}),
+    signMessage: vi.fn(async () => "0xsig"),
+    getAccessToken: () => TOKEN,
+  }),
+}));
+vi.mock("@/lib/decane", () => ({ ensureUnlocked: vi.fn(async () => {}) }));
+vi.mock("@/hooks/use-base-block", () => ({
+  readBaseTokenBalance: chain.readBaseTokenBalance,
 }));
 vi.mock("@/hooks/use-evm-send", () => ({
   useEvmSend: () => chain.evmSend,
@@ -161,8 +161,8 @@ beforeEach(() => {
   vi.useFakeTimers();
   queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   window.localStorage.setItem(
-    "wsws.meme-linked.v1",
-    JSON.stringify([`did:privy:u1:${WALLET.toLowerCase()}`, `did:privy:u1:solana:${SOL_WALLET}`])
+    "wsws.meme-linked.v3",
+    JSON.stringify([`${UID}:${WALLET.toLowerCase()}`, `${UID}:solana:${SOL_WALLET}`])
   );
   api.quoteSwap.mockResolvedValue(buyQuote);
   api.registerSubmission.mockResolvedValue({ swapId: "swap-1", status: "SUBMITTED" });

@@ -1,4 +1,6 @@
 import type {
+  LeaderboardWinner,
+  PaidAmount,
   TokenAmount,
   VaultActivity,
   VaultGame,
@@ -39,11 +41,67 @@ export function isVaultGame(value: unknown): value is VaultGame {
   );
 }
 
+// The starter's name for a game, off the service's optional `metadata` object.
+//
+// A blank or non-string title is treated as absent rather than rendered: an
+// empty heading is worse than the number it replaced. The description is
+// dropped with it, because the title is the label and a description alone has
+// nothing to hang on.
+function readMetadata(value: unknown): { title?: string; description?: string } {
+  if (!value || typeof value !== "object") return {};
+  const meta = value as Record<string, unknown>;
+  const title = typeof meta.title === "string" ? meta.title.trim() : "";
+  if (title === "") return {};
+  const description = typeof meta.description === "string" ? meta.description.trim() : "";
+  return { title, ...(description === "" ? {} : { description }) };
+}
+
 // The well-formed rows of a list, whatever else it held. A malformed row is
 // dropped rather than rendered half-empty, and the caller says so.
+//
+// Metadata is read here rather than checked in isVaultGame: a game with a
+// broken name is still a game, and dropping the row would hide a live pot over
+// a label.
 export function onlyVaultGames(value: unknown): VaultGame[] {
   if (!Array.isArray(value)) return [];
-  return value.filter(isVaultGame);
+  return value.filter(isVaultGame).map((game) => {
+    const raw = game as unknown as Record<string, unknown>;
+    return {
+      ...game,
+      // Only a literal true is private. An absent or malformed flag reads as
+      // public, because the failure that matters is a public game vanishing
+      // from the lobby, not a private one appearing in it.
+      isPrivate: raw.isPrivate === true,
+      ...readMetadata(raw.metadata),
+    };
+  });
+}
+
+/**
+ * The games the lobby may list.
+ *
+ * `locallyPrivate` is the starter's own record of what they chose. A private
+ * game can reach this client before the reconciler has indexed its
+ * GamePrivacySet log, and until it does the row honestly says public; without
+ * that record the game flashes into everybody's lobby for a few seconds.
+ * It only ever hides, never reveals, so one browser's list cannot expose
+ * somebody else's game.
+ */
+export function publicGames<T extends { gameId: number; isPrivate?: boolean }>(
+  games: readonly T[],
+  locallyPrivate: readonly number[] = []
+): T[] {
+  const mine = new Set(locallyPrivate);
+  return games.filter((game) => game.isPrivate !== true && !mine.has(game.gameId));
+}
+
+/** What to call a game: its name, or its number when it has none. */
+export function gameTitle(
+  game: { gameId: number; title?: string },
+  fallback: (id: number) => string
+): string {
+  const title = game.title?.trim() ?? "";
+  return title === "" ? fallback(game.gameId) : title;
 }
 
 // The service records a winner or a starter as null when a log did not carry
@@ -63,6 +121,35 @@ function isVaultWinner(value: unknown): value is VaultWinner {
     typeof v.settlementTx === "string" &&
     typeof v.settledAt === "string"
   );
+}
+
+// The board prices from the raw units itself, so it does not require the
+// service's usdValue/formattedUsd the way isTokenAmount does.
+function isPaidAmount(value: unknown): value is PaidAmount {
+  if (!value || typeof value !== "object") return false;
+  const v = value as Record<string, unknown>;
+  return (
+    typeof v.amount === "string" && typeof v.raw === "string" && typeof v.decimals === "number"
+  );
+}
+
+// The board's own row. It is deliberately not a VaultWinner: the leaderboard
+// route trims each winner to the four fields the board reads, so validating it
+// against the full record would reject every row.
+function isLeaderboardWinner(value: unknown): value is LeaderboardWinner {
+  if (!value || typeof value !== "object") return false;
+  const v = value as Record<string, unknown>;
+  return (
+    typeof v.gameId === "number" &&
+    typeof v.winner === "string" &&
+    v.winner.length > 0 &&
+    isPaidAmount(v.paid)
+  );
+}
+
+export function onlyLeaderboardWinners(value: unknown): LeaderboardWinner[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter(isLeaderboardWinner);
 }
 
 export function onlyVaultWinners(value: unknown): VaultWinner[] {
@@ -160,4 +247,47 @@ export function sortGameRows(rows: unknown[]): {
     else dropped += 1;
   }
   return { api, chain, dropped };
+}
+
+/**
+ * Carries a name the client already knows onto rows that arrive without one.
+ *
+ * The keeper builds its lobby snapshot with `toGameDto(game, usd)` — two
+ * arguments, where the third is the metadata — so a socket frame never carries
+ * a title. The snapshot replaces the games cache wholesale, which is correct
+ * for everything it DOES carry (a game missing from it has settled or gone
+ * away) and wrong for the one thing it does not: absent here means "not sent",
+ * not "cleared", and treating the two the same wiped a game's name a second
+ * after REST had loaded it.
+ *
+ * The snapshot still decides which games exist, so nothing is resurrected: a
+ * name is only ever carried onto a row the snapshot itself listed.
+ */
+export function keepKnownMetadata<
+  T extends { gameId: number; title?: string; description?: string; isPrivate?: boolean },
+>(previous: readonly T[], incoming: readonly T[]): T[] {
+  if (previous.length === 0) return [...incoming];
+  const known = new Map(previous.map((game) => [game.gameId, game]));
+  return incoming.map((game) => {
+    const before = known.get(game.gameId);
+    if (before === undefined) return game;
+
+    // Private latches. A stale keeper reports every game public over the
+    // socket, so a flag that contradicts what we know is refused: the wrong
+    // direction is exposure. A missing name is carried across instead.
+    const isPrivate = before.isPrivate === true ? true : game.isPrivate;
+    const keepsTitle = game.title === undefined && before.title !== undefined;
+    if (!keepsTitle && isPrivate === game.isPrivate) return game;
+
+    return {
+      ...game,
+      ...(isPrivate === undefined ? {} : { isPrivate }),
+      ...(keepsTitle
+        ? {
+            title: before.title,
+            ...(before.description === undefined ? {} : { description: before.description }),
+          }
+        : {}),
+    };
+  });
 }

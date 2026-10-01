@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const api = vi.hoisted(() => ({
   fetchArkjetCurrentRound: vi.fn(),
   fetchArkjetRoundHistory: vi.fn(),
+  fetchArkjetSimulatedActivity: vi.fn(),
   fetchArkjetCapabilities: vi.fn(),
   fetchArkjetFairnessRules: vi.fn(),
   fetchArkjetRiskRules: vi.fn(),
@@ -18,17 +19,35 @@ const api = vi.hoisted(() => ({
 const auth = vi.hoisted(() => ({
   ready: true,
   authenticated: true,
-  user: { id: "user-1" },
+  evmAddress: "0x00000000000000000000000000000000000000aA",
+  solanaAddress: null,
+  profile: { name: "u1", email: "", avatarSeed: "u1" },
   login: vi.fn(),
 }));
-vi.mock("@/features/casino/lib/api/arkjet", () => api);
-vi.mock("@privy-io/react-auth", () => ({
-  usePrivy: () => auth,
-  // The cash-out reports to Shine, which reaches the square's authed client;
-  // that module resolves a Privy access token at import time.
-  getAccessToken: vi.fn(async () => null),
-  getIdentityToken: vi.fn(async () => null),
+const live = vi.hoisted(() => ({
+  sendArkjetCommand: vi.fn(),
+  subscribeArkjetTopics: vi.fn(() => () => undefined),
 }));
+vi.mock("@/features/casino/lib/api/arkjet", () => api);
+vi.mock("@/features/casino/lib/arkjet/live-socket", () => ({
+  ARKJET_SOCKET_CLOSED: { type: "__closed" },
+  ARKJET_SOCKET_READY: { type: "__ready" },
+  ARKJET_SOCKET_RESYNC: { type: "__resync" },
+  isArkjetBet: (value: unknown) => Boolean(value && typeof value === "object" && "betId" in value),
+  isArkjetRound: (value: unknown) =>
+    Boolean(value && typeof value === "object" && "roundId" in value && "sequence" in value),
+  isArkjetSimulatedActivityFeed: (value: unknown) =>
+    Boolean(value && typeof value === "object" && "isSimulated" in value && "items" in value),
+  sendArkjetCommand: live.sendArkjetCommand,
+  subscribeArkjetTopics: live.subscribeArkjetTopics,
+}));
+// The hooks read the Decane session (useAuthSession), not Privy — the whole
+// point of this branch. `auth.evmAddress` stands where `auth.user.id` did:
+// it is the identity the queries are keyed on.
+vi.mock("@/hooks/use-auth-session", () => ({
+  useAuthSession: () => auth,
+}));
+vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn() }) }));
 
 import { ARKJET_KEYS, useArkjet } from "./use-arkjet";
 
@@ -40,12 +59,20 @@ const round = { roundId: "round-1", status: "COMMITTED" };
 
 beforeEach(() => {
   vi.useFakeTimers();
-  auth.user = { id: "user-1" };
+  auth.evmAddress = "0x00000000000000000000000000000000000000aA";
   auth.authenticated = true;
   client = new QueryClient({ defaultOptions: { queries: { retryDelay: 0 } } });
   for (const mock of Object.values(api)) mock.mockReset();
+  live.sendArkjetCommand.mockReset();
+  live.subscribeArkjetTopics.mockClear();
   api.fetchArkjetCurrentRound.mockResolvedValue(round);
   api.fetchArkjetRoundHistory.mockResolvedValue({ items: [] });
+  api.fetchArkjetSimulatedActivity.mockResolvedValue({
+    roundId: "round-1",
+    source: "simulation",
+    isSimulated: true,
+    items: [],
+  });
   api.fetchArkjetCurrentBets.mockResolvedValue({ items: [] });
   api.fetchArkjetBalance.mockResolvedValue({ available: "0.5", currency: "USDC" });
   api.fetchArkjetCapabilities.mockResolvedValue({ wageringEnabled: true });
@@ -65,7 +92,9 @@ describe("Arkjet request cadence", () => {
     await act(() => vi.advanceTimersByTimeAsync(0));
     expect(result.current.balance?.available).toBe("0.5");
     api.fetchArkjetBalance.mockImplementation(() => new Promise(() => {}));
-    auth.user = { id: "user-2" };
+    // A different account: its balance must not be read from the first
+    // account's cache.
+    auth.evmAddress = "0x00000000000000000000000000000000000000bB";
     rerender();
     expect(result.current.balance).toBeNull();
   });
@@ -95,6 +124,7 @@ describe("Arkjet request cadence", () => {
       api.fetchArkjetRiskRules,
     ])
       expect(mock).toHaveBeenCalledTimes(1);
+    expect(api.fetchArkjetSimulatedActivity.mock.calls.length).toBeLessThanOrEqual(2);
   });
 
   it("backs off failed reads instead of retrying and polling through a 429", async () => {
@@ -108,6 +138,7 @@ describe("Arkjet request cadence", () => {
     expect(api.fetchArkjetBalance).toHaveBeenCalledTimes(1);
     expect(api.fetchArkjetCurrentBets).toHaveBeenCalledTimes(1);
     expect(api.fetchArkjetRoundHistory).toHaveBeenCalledTimes(1);
+    expect(api.fetchArkjetSimulatedActivity).toHaveBeenCalledTimes(1);
   });
 
   it("refreshes settlement data once when a running round finishes", async () => {
@@ -122,5 +153,27 @@ describe("Arkjet request cadence", () => {
     expect(api.fetchArkjetBalance).toHaveBeenCalledTimes(2);
     expect(api.fetchArkjetCurrentBets).toHaveBeenCalledTimes(2);
     expect(api.fetchArkjetRoundHistory).toHaveBeenCalledTimes(2);
+    expect(api.fetchArkjetSimulatedActivity).toHaveBeenCalledTimes(2);
+  });
+
+  it("coalesces live activity bursts into the latest 100ms snapshot", async () => {
+    renderHook(() => useArkjet(), { wrapper });
+    await act(() => vi.advanceTimersByTimeAsync(0));
+    const calls = live.subscribeArkjetTopics.mock.calls as unknown as Array<
+      [string | null, (frame: { type: string; data: unknown }) => void]
+    >;
+    const listener = calls.at(-1)?.[1];
+    expect(listener).toBeTypeOf("function");
+
+    const first = { roundId: "round-1", source: "simulation", isSimulated: true, items: [1] };
+    const latest = { roundId: "round-1", source: "simulation", isSimulated: true, items: [1, 2] };
+    act(() => {
+      listener?.({ type: "simulatedActivityUpdated", data: first });
+      listener?.({ type: "simulatedActivityUpdated", data: latest });
+    });
+    expect(client.getQueryData(ARKJET_KEYS.activity)).not.toEqual(latest);
+
+    await act(() => vi.advanceTimersByTimeAsync(100));
+    expect(client.getQueryData(ARKJET_KEYS.activity)).toEqual(latest);
   });
 });

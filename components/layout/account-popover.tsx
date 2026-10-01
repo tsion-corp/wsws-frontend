@@ -1,19 +1,28 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import { useLinkWithPasskey, useLogout, usePrivy } from "@privy-io/react-auth";
+import { useSocialAuth, useSocialWallet } from "decane-connect-kit";
+import { useAuthSession } from "@/hooks/use-auth-session";
+import { useDisplayName } from "@/hooks/use-display-name";
 import { Avatar } from "@/components/ui/avatar";
-import { InviteFriendsModal } from "@/features/referrals";
-import { HelpIcon, SignOutIcon } from "@/components/ui/icons";
-import { deriveProfile } from "@/lib/user";
+import { SquareAvatar } from "@/components/ui/square-avatar";
+import { useSquareAvatar, useSquareSeed } from "@/hooks/use-square-avatar";
+import Link from "next/link";
+// Deep import: the @/features/migrate barrel re-exports UpdateBalanceButton,
+// which mounts the whole Privy SDK. The row itself is light; the sheet is not,
+// so only the sheet is deferred — and this popover is mounted on every route.
+import { MoveOldMoneyButton } from "@/features/migrate/components/move-old-money-entry";
+import { HelpIcon, ShineIcon, SignOutIcon } from "@/components/ui/icons";
+import { openSupportChat } from "@/lib/support-chat/open";
 import { toast } from "@/lib/toast";
-
-const SUPPORT_FORM_URL = "https://forms.gle/T5DLdFCAbRsVrzU97";
+import { openMigration } from "@/features/migrate/lib/migration-card-store";
 
 interface AccountPopoverProps {
+  /** Opens the Shine sheet. Hosted by the sidebar, so it outlives this menu. */
+  onOpenShine: () => void;
   open: boolean;
   onClose: () => void;
   triggerRef: React.RefObject<HTMLElement | null>;
@@ -61,30 +70,35 @@ function InviteIcon({ size = 18 }: { size?: number }) {
   );
 }
 
-export function AccountPopover({ open, onClose, triggerRef }: AccountPopoverProps) {
+export function AccountPopover({ open, onClose, triggerRef, onOpenShine }: AccountPopoverProps) {
   const popoverRef = useRef<HTMLDivElement>(null);
   const t = useTranslations("account");
-  const [inviteOpen, setInviteOpen] = useState(false);
-  const { user } = usePrivy();
+  const { profile, logout: sessionLogout } = useAuthSession();
+  const displayName = useDisplayName();
+  const { canUsePasskey } = useSocialAuth();
+  const { addPasskey } = useSocialWallet();
   const router = useRouter();
   const reduce = useReducedMotion();
 
-  const { logout } = useLogout({
-    onSuccess: () => router.push("/auth"),
-  });
+  const logout = async () => {
+    await sessionLogout();
+    router.push("/auth");
+  };
 
-  const { linkWithPasskey } = useLinkWithPasskey({
-    onSuccess: () => {
+  // Privy's useLinkWithPasskey → the kit's addPasskey (Promise, throws on error).
+  const linkWithPasskey = async () => {
+    try {
+      await addPasskey();
       toast.success(t("passkeyAdded"));
-    },
-    onError: (err) => {
+    } catch (err) {
       console.error("Passkey linking failed:", err);
       toast.error(t("passkeyFailed"));
-    },
-  });
+    }
+  };
 
-  const profile = deriveProfile(user);
-  const hasPasskey = user?.linkedAccounts?.some((a) => a.type === "passkey") ?? false;
+  const hasPasskey = canUsePasskey;
+  const squareAvatar = useSquareAvatar();
+  const squareSeed = useSquareSeed();
 
   useEffect(() => {
     if (!open) return;
@@ -136,14 +150,19 @@ export function AccountPopover({ open, onClose, triggerRef }: AccountPopoverProp
           >
             {/* User Identity Header */}
             <div className="flex items-center gap-2.5 px-1 pb-2">
-              <Avatar seed={profile.avatarSeed} size={36} />
+              <SquareAvatar src={squareAvatar} seed={squareSeed} name={profile.name} size={36} />
               <div className="min-w-0 flex-1" data-sensitive="other">
-                <div className="truncate text-[13.5px] font-medium text-white">{profile.name}</div>
+                <div className="truncate text-[13.5px] font-medium text-white">{displayName}</div>
                 <div className="truncate text-[11.5px] font-normal text-white/50">
                   {profile.email}
                 </div>
               </div>
             </div>
+
+            {/* The wallet addresses are gone (2026-09-28). An Ark ID is the
+                identity people hand out now, and a hex string nobody can read
+                was the only thing this block offered. The component and its
+                copy are still in the tree, one import from returning. */}
 
             {/* Quick Actions */}
             <div className="mt-2.5 flex flex-col gap-1 border-t border-white/8 pt-2">
@@ -164,31 +183,56 @@ export function AccountPopover({ open, onClose, triggerRef }: AccountPopoverProp
                 </button>
               ) : null}
 
-              <button
-                type="button"
-                role="menuitem"
-                onClick={() => {
-                  setInviteOpen(true);
-                }}
-                className={itemClass}
-              >
+              {/* A route now, not a sheet: the referral network is something
+                  people come back to, and a link to it can be shared. */}
+              <Link href="/referrals" role="menuitem" onClick={onClose} className={itemClass}>
                 <span className="text-accent">
                   <InviteIcon />
                 </span>
                 <span>{t("inviteFriends")}</span>
+              </Link>
+
+              {/* The always-available door into the migration. Mirrors the
+                  phone Account modal, so a desktop user reaches the sweep from
+                  the same place. Only the row lives here — the sheet is a
+                  sibling below, for the reason given there. */}
+              <MoveOldMoneyButton
+                onClick={() => openMigration("account_modal")}
+                className={itemClass}
+              />
+
+              {/* Shine, in the one place it lives now. It used to be a card on
+                  each of the seven service pages; this is the door to all
+                  seven. */}
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  onClose();
+                  onOpenShine();
+                }}
+                className={itemClass}
+              >
+                <span className="text-accent">
+                  <ShineIcon size={18} />
+                </span>
+                <span>{t("shine")}</span>
               </button>
 
-              <a
-                href={SUPPORT_FORM_URL}
-                target="_blank"
-                rel="noopener noreferrer"
+              {/* The in-app chat, not a form in a new tab: support is a
+                  conversation the shell already carries. */}
+              <button
+                type="button"
                 role="menuitem"
-                onClick={onClose}
+                onClick={() => {
+                  onClose();
+                  openSupportChat();
+                }}
                 className={itemClass}
               >
                 <HelpIcon size={18} />
                 <span>{t("helpSupport")}</span>
-              </a>
+              </button>
 
               <button
                 type="button"
@@ -206,14 +250,6 @@ export function AccountPopover({ open, onClose, triggerRef }: AccountPopoverProp
           </motion.div>
         ) : null}
       </AnimatePresence>
-
-      <InviteFriendsModal
-        open={inviteOpen}
-        onClose={() => {
-          setInviteOpen(false);
-          onClose();
-        }}
-      />
     </>
   );
 }

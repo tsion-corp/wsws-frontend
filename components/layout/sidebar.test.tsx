@@ -26,13 +26,31 @@ vi.mock("next-intl", () => ({
 // The signed-in account the rail reads. Each test sets the shape it needs, so
 // the mock hands back whatever this holds at render time.
 let privyUser: User | null = null;
-vi.mock("@privy-io/react-auth", () => ({
-  usePrivy: () => ({ user: privyUser }),
-  useLogout: () => ({ logout: vi.fn() }),
-  useLinkWithPasskey: () => ({ linkWithPasskey: vi.fn() }),
-  getAccessToken: vi.fn(),
-  getIdentityToken: vi.fn(),
+// The rail reads the session through the Decane-backed seam. The cases still
+// describe the account as a Privy-shaped user, so derive the seam's profile
+// and address from it with the same helpers the app used to.
+vi.mock("@/hooks/use-auth-session", async () => {
+  const { deriveProfile, getWalletAddress } = await import("@/lib/user");
+  return {
+    useAuthSession: () => ({
+      ready: true,
+      authenticated: privyUser !== null,
+      evmAddress: privyUser ? getWalletAddress(privyUser, "ethereum") : null,
+      solanaAddress: privyUser ? getWalletAddress(privyUser, "solana") : null,
+      profile: deriveProfile(privyUser),
+      logout: vi.fn(),
+    }),
+  };
+});
+
+// The name the shell shows is the Ark ID when the wallet has one. The lookup
+// behind it needs a query client; these tests are about the chrome, so the
+// answer is stubbed and one test flips it.
+const arkName = vi.hoisted(() => ({ value: null as string | null }));
+vi.mock("@/hooks/use-ark-name", () => ({
+  useArkName: () => arkName.value,
 }));
+
 vi.mock("@/components/broadcast/go-live-control", () => ({
   GoLiveControl: () => <button type="button">Go Live</button>,
 }));
@@ -43,6 +61,11 @@ vi.mock("@/components/broadcast/go-live-control", () => ({
 vi.mock("@/components/layout/account-popover", () => ({
   AccountPopover: () => null,
 }));
+// The rail also mounts the Ark ID card and its modal, which read the
+// reverse-name record through a react-query hook. The rail's own markup is
+// what is under test, so they are stubbed like the popover above.
+vi.mock("@/features/bns/components/ark-id-card", () => ({ ArkIdCard: () => null }));
+vi.mock("@/features/bns/components/ark-id-modal", () => ({ ArkIdModal: () => null }));
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: vi.fn() }),
 }));
@@ -99,6 +122,14 @@ function renderSidebar() {
   );
 }
 
+// The account face reads the player's square profile. These cover the rail
+// and its chrome, not where the picture comes from, so the read is stubbed
+// out: null is the ordinary answer and leaves the seeded artwork in place.
+vi.mock("@/hooks/use-square-avatar", () => ({
+  useSquareAvatar: () => null,
+  useSquareSeed: () => "seed",
+}));
+
 describe("Sidebar", () => {
   beforeEach(() => {
     privyUser = null;
@@ -111,6 +142,19 @@ describe("Sidebar", () => {
    * module reads its environment at import, and the test run loads no .env, so
    * this is also the state the suite sees by default.
    */
+  // The Ark ID is the identity people hand out, so the footer names the
+  // person by it once the wallet holds one; without one, the profile name.
+  it("names the account by its Ark ID when the wallet holds one", () => {
+    arkName.value = "signor.ark";
+    try {
+      renderSidebar();
+      expect(screen.getByText("signor.ark")).toBeInTheDocument();
+      expect(screen.queryByText("World Street user")).toBeNull();
+    } finally {
+      arkName.value = null;
+    }
+  });
+
   it("offers no Market Square entry while the square is hidden", () => {
     renderSidebar();
     expect(screen.queryByRole("link", { name: /^square$/i })).toBeNull();

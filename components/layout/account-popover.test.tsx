@@ -1,6 +1,10 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { AccountPopover } from "./account-popover";
+import {
+  resetMigrationRequest,
+  useMigrationRequest,
+} from "@/features/migrate/lib/migration-card-store";
 
 vi.mock("next-intl", () => ({
   useTranslations: () => (key: string) => key,
@@ -9,18 +13,47 @@ vi.mock("next-intl", () => ({
 const mockLogout = vi.fn();
 const mockLinkWithPasskey = vi.fn();
 
-vi.mock("@privy-io/react-auth", () => ({
-  usePrivy: () => ({
-    user: {
-      id: "did:privy:test",
-      email: { address: "test@example.com" },
-      linkedAccounts: [],
-    },
+// The popover reads the session through the Decane-backed seam and the kit's
+// own hooks (passkey linking), replacing Privy's usePrivy/useLogout/useLinkWithPasskey.
+vi.mock("@/hooks/use-auth-session", () => ({
+  useAuthSession: () => ({
+    ready: true,
+    authenticated: true,
+    evmAddress: "0x0000000000000000000000000000000000000001",
+    solanaAddress: null,
+    profile: { name: "Test User", email: "test@example.com", avatarSeed: "did:privy:test" },
+    logout: mockLogout,
   }),
-  useLogout: () => ({ logout: mockLogout }),
-  useLinkWithPasskey: () => ({ linkWithPasskey: mockLinkWithPasskey }),
-  getAccessToken: vi.fn(),
-  getIdentityToken: vi.fn(),
+}));
+
+// The name the shell shows is the Ark ID when the wallet has one. The lookup
+// behind it needs a query client; these tests are about the chrome, so the
+// answer is stubbed and one test flips it.
+const arkName = vi.hoisted(() => ({ value: null as string | null }));
+vi.mock("@/hooks/use-ark-name", () => ({
+  useArkName: () => arkName.value,
+}));
+
+vi.mock("decane-connect-kit", () => ({
+  useSocialAuth: () => ({ canUsePasskey: false }),
+  useSocialWallet: () => ({ addPasskey: mockLinkWithPasskey }),
+}));
+
+// The migration door needs a query client and the whole venue-adapter graph;
+// neither is what this test is about.
+// Deep-imported now, not through the @/features/migrate barrel: that barrel
+// re-exports UpdateBalanceButton, which mounts the whole Privy SDK, and this
+// popover renders on every signed-in route.
+vi.mock("@/features/migrate/components/move-old-money-entry", () => ({
+  MoveOldMoneyButton: ({ onClick }: { onClick: () => void }) => (
+    <button onClick={onClick}>open-migration</button>
+  ),
+}));
+vi.mock("@/components/layout/modals/wallet-addresses", () => ({
+  WalletAddresses: () => <div data-testid="wallet-addresses" />,
+}));
+vi.mock("@/components/layout/migration-adapters", () => ({
+  MIGRATION_ADAPTERS: [],
 }));
 
 vi.mock("next/navigation", () => ({
@@ -31,16 +64,40 @@ vi.mock("@/features/referrals", () => ({
   InviteFriendsModal: () => null,
 }));
 
+// The account face reads the player's square profile. These cover the rail
+// and its chrome, not where the picture comes from, so the read is stubbed
+// out: null is the ordinary answer and leaves the seeded artwork in place.
+vi.mock("@/hooks/use-square-avatar", () => ({
+  useSquareAvatar: () => null,
+  useSquareSeed: () => "seed",
+}));
+
+const onOpenShine = vi.fn();
+
 describe("AccountPopover", () => {
   it("renders nothing when closed", () => {
     const triggerRef = { current: document.createElement("button") };
-    render(<AccountPopover open={false} onClose={() => {}} triggerRef={triggerRef} />);
+    render(
+      <AccountPopover
+        open={false}
+        onOpenShine={onOpenShine}
+        onClose={() => {}}
+        triggerRef={triggerRef}
+      />
+    );
     expect(screen.queryByRole("menu")).toBeNull();
   });
 
   it("renders popover menu with user info and actions when open", () => {
     const triggerRef = { current: document.createElement("button") };
-    render(<AccountPopover open={true} onClose={() => {}} triggerRef={triggerRef} />);
+    render(
+      <AccountPopover
+        open={true}
+        onOpenShine={onOpenShine}
+        onClose={() => {}}
+        triggerRef={triggerRef}
+      />
+    );
 
     expect(screen.getByRole("menu")).toBeInTheDocument();
     expect(screen.getByText("test@example.com")).toBeInTheDocument();
@@ -48,10 +105,37 @@ describe("AccountPopover", () => {
     expect(screen.getByRole("menuitem", { name: /inviteFriends/i })).toBeInTheDocument();
   });
 
+  it("names the account by its Ark ID when the wallet holds one, email unchanged", () => {
+    arkName.value = "signor.ark";
+    const triggerRef = { current: document.createElement("button") };
+    try {
+      render(
+        <AccountPopover
+          open={true}
+          onOpenShine={onOpenShine}
+          onClose={() => {}}
+          triggerRef={triggerRef}
+        />
+      );
+      expect(screen.getByText("signor.ark")).toBeInTheDocument();
+      expect(screen.queryByText("Test User")).toBeNull();
+      expect(screen.getByText("test@example.com")).toBeInTheDocument();
+    } finally {
+      arkName.value = null;
+    }
+  });
+
   it("calls logout when sign out is clicked", () => {
     const onClose = vi.fn();
     const triggerRef = { current: document.createElement("button") };
-    render(<AccountPopover open={true} onClose={onClose} triggerRef={triggerRef} />);
+    render(
+      <AccountPopover
+        open={true}
+        onOpenShine={onOpenShine}
+        onClose={onClose}
+        triggerRef={triggerRef}
+      />
+    );
 
     fireEvent.click(screen.getByRole("menuitem", { name: /signOut/i }));
     expect(mockLogout).toHaveBeenCalled();
@@ -61,7 +145,14 @@ describe("AccountPopover", () => {
   it("closes when Escape key is pressed", () => {
     const onClose = vi.fn();
     const triggerRef = { current: document.createElement("button") };
-    render(<AccountPopover open={true} onClose={onClose} triggerRef={triggerRef} />);
+    render(
+      <AccountPopover
+        open={true}
+        onOpenShine={onOpenShine}
+        onClose={onClose}
+        triggerRef={triggerRef}
+      />
+    );
 
     fireEvent.keyDown(window, { key: "Escape" });
     expect(onClose).toHaveBeenCalled();
@@ -75,11 +166,52 @@ describe("AccountPopover", () => {
     // eventually removed once the exit completes.
     const triggerRef = { current: document.createElement("button") };
     const { rerender } = render(
-      <AccountPopover open={true} onClose={() => {}} triggerRef={triggerRef} />
+      <AccountPopover
+        open={true}
+        onOpenShine={onOpenShine}
+        onClose={() => {}}
+        triggerRef={triggerRef}
+      />
     );
     expect(screen.getByRole("menu")).toBeInTheDocument();
 
-    rerender(<AccountPopover open={false} onClose={() => {}} triggerRef={triggerRef} />);
+    rerender(
+      <AccountPopover
+        open={false}
+        onOpenShine={onOpenShine}
+        onClose={() => {}}
+        triggerRef={triggerRef}
+      />
+    );
     await waitFor(() => expect(screen.queryByRole("menu")).not.toBeInTheDocument());
+  });
+});
+
+function Request() {
+  const request = useMigrationRequest();
+  return <div data-testid="request">{request ? request.entry : "none"}</div>;
+}
+
+afterEach(() => resetMigrationRequest());
+
+describe("the migration row", () => {
+  // The popover mounts no card of its own. The one card lives on the session
+  // and portals to document.body, so the popover closing behind a tap in it —
+  // every click there reads as "outside the popover" — takes nothing down.
+  it("asks the one card to open, from the account menu", () => {
+    const triggerRef = { current: null };
+    render(
+      <>
+        <AccountPopover
+          open={true}
+          onOpenShine={onOpenShine}
+          onClose={() => {}}
+          triggerRef={triggerRef}
+        />
+        <Request />
+      </>
+    );
+    fireEvent.click(screen.getByText("open-migration"));
+    expect(screen.getByTestId("request")).toHaveTextContent("account_modal");
   });
 });

@@ -1,17 +1,21 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { usePrivy } from "@privy-io/react-auth";
 import Link from "next/link";
 import { useTranslations } from "next-intl";
 import { MarketLogo } from "@/components/ui/market-logo";
-import { Avatar } from "@/components/ui/avatar";
+import { SquareAvatar } from "@/components/ui/square-avatar";
+import { useSquareAvatar, useSquareSeed } from "@/hooks/use-square-avatar";
 import type { NavItem } from "@/components/layout/nav-items";
 import type { DashboardSection } from "@/lib/modal-types";
-import { deriveProfile } from "@/lib/user";
+import { truncateAddress } from "@/lib/format";
+import { useAuthSession } from "@/hooks/use-auth-session";
+import { useDisplayName } from "@/hooks/use-display-name";
 import { GoLiveControl } from "@/components/broadcast/go-live-control";
 import { MARKET_SQUARE_HIDDEN } from "@/lib/market-square";
+import { SQUARE_ZONE_PATH, openSquareZone } from "@/lib/square-zone";
 import { AccountPopover } from "@/components/layout/account-popover";
+import { ShineSheet } from "@/components/shine/shine-sheet";
 
 interface SidebarProps {
   items: NavItem[];
@@ -28,11 +32,10 @@ interface SidebarProps {
 // choice, on the backdrop, on Escape, or on its own close button. One
 // component for both, so the nav can never differ between the two.
 export function Sidebar({ items, activeSection, onNavigate, open, onClose }: SidebarProps) {
-  const { user } = usePrivy();
-  const profile = deriveProfile(user);
-  // The footer's second line is the wallet, not the email: the topbar shows
-  // the same address on the same screen, and an email is blank for anyone who
-  // signed in with a wallet or a phone number.
+  const { profile, evmAddress: address } = useAuthSession();
+  const displayName = useDisplayName();
+  const squareAvatar = useSquareAvatar();
+  const squareSeed = useSquareSeed();
   const t = useTranslations("topbar");
   // The square is a product with its own catalog namespace, so the rail reads
   // its name from there rather than repeating the string. The rail's word is
@@ -46,6 +49,10 @@ export function Sidebar({ items, activeSection, onNavigate, open, onClose }: Sid
   const squareShown = !MARKET_SQUARE_HIDDEN;
 
   const [accountPopoverOpen, setAccountPopoverOpen] = useState(false);
+  // Held here rather than inside the popover: the popover closes on an outside
+  // click, and the sheet would go with it the moment somebody reached for a
+  // switch inside it.
+  const [shineOpen, setShineOpen] = useState(false);
   const profileButtonRef = useRef<HTMLButtonElement>(null);
 
   // While the drawer is open the page behind it does not scroll, and Escape
@@ -151,20 +158,28 @@ export function Sidebar({ items, activeSection, onNavigate, open, onClose }: Sid
         <nav className="flex min-h-0 flex-col gap-[3px] overflow-x-hidden overflow-y-auto">
           {items.slice(0, squareIndex).map(renderItem)}
 
-          {/* Market Square has a page of its own at /square (ADR-2026-09-12
-              square-page-in-app), and the design gives it an ordinary rail row
-              between Prediction and Arkade. It is a next/link like the logo
-              above rather than a nav button: the square is not in the
-              reorderable section list, so it is seated here by hand. The
-              outbound "Open the Square" sits on the page's header. With the
-              square hidden it renders nothing rather than a dead entry, and
+          {/* Market Square lives at /square, and the design gives it an
+              ordinary rail row between Prediction and Arkade. /square is the
+              Square's OWN app (a Next.js Multi-Zone, lib/square-zone), so this
+              is a plain anchor — a full page load — not a next/link, which
+              would ask this build for a route it no longer has. The square is
+              not in the reorderable section list, so it is seated here by
+              hand. With the square hidden it renders nothing rather than a
+              dead entry, and
               MARKET_SQUARE_HIDDEN in lib/market-square.ts is the off switch.
               It is not affected by SQUARE_SECTIONS_HIDDEN, which only governs
               the square's sections on the portfolio. */}
           {squareShown ? (
-            <Link
-              href="/square"
-              onClick={onClose}
+            <a
+              href={SQUARE_ZONE_PATH}
+              // The tap navigates through openSquareZone so the session rides
+              // along (lib/square-zone, SQUARE_HANDOFF_PARAM). The href stays
+              // the bare path: a token has no business sitting in the DOM.
+              onClick={(event) => {
+                event.preventDefault();
+                onClose();
+                openSquareZone(SQUARE_ZONE_PATH);
+              }}
               data-tour-nav="square"
               className={`flex w-full cursor-pointer items-center gap-3 rounded-xl px-3 py-[11px] text-left font-sans text-[14.5px] font-medium transition-colors ${
                 activeSection === "square"
@@ -183,7 +198,7 @@ export function Sidebar({ items, activeSection, onNavigate, open, onClose }: Sid
                 />
               </span>
               <span className="flex-1">{tSquare("navLabel")}</span>
-            </Link>
+            </a>
           ) : null}
 
           {items.slice(squareIndex).map(renderItem)}
@@ -199,10 +214,10 @@ export function Sidebar({ items, activeSection, onNavigate, open, onClose }: Sid
             onClick={() => setAccountPopoverOpen((v) => !v)}
             className="flex w-full cursor-pointer items-center gap-2.5 rounded-xl border border-white/8 px-2 py-2.5 text-left transition-colors hover:bg-white/4"
           >
-            <Avatar seed={profile.avatarSeed} />
+            <SquareAvatar src={squareAvatar} seed={squareSeed} name={profile.name} size={32} />
             <span className="min-w-0 flex-1">
               <span className="block truncate font-sans text-[13px] font-medium text-white">
-                {profile.name}
+                {displayName}
               </span>
             </span>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
@@ -219,7 +234,9 @@ export function Sidebar({ items, activeSection, onNavigate, open, onClose }: Sid
           {/* Always mounted: AccountPopover plays its own exit animation off
               the `open` prop, and unmounting it here would skip straight past
               that closing frame. */}
+          <ShineSheet open={shineOpen} onClose={() => setShineOpen(false)} />
           <AccountPopover
+            onOpenShine={() => setShineOpen(true)}
             open={accountPopoverOpen}
             onClose={() => setAccountPopoverOpen(false)}
             triggerRef={profileButtonRef}

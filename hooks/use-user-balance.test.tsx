@@ -10,12 +10,16 @@ import type { UserBalance } from "@/lib/balance/types";
 const apiFetch = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/api", () => ({ apiFetch }));
 
-const privy = vi.hoisted(() => ({
+const session = vi.hoisted(() => ({
   ready: true,
   authenticated: true,
-  user: { id: "did:privy:alice" } as { id: string } | null,
+  userId: "did:privy:alice" as string | null,
+  evmAddress: null as string | null,
+  solanaAddress: null as string | null,
+  profile: { name: "u", email: "", avatarSeed: "u" },
+  logout: async () => {},
 }));
-vi.mock("@privy-io/react-auth", () => ({ usePrivy: () => privy }));
+vi.mock("@/hooks/use-auth-session", () => ({ useAuthSession: () => session }));
 
 import { userBalanceKey, useUserBalance } from "@/hooks/use-user-balance";
 
@@ -56,9 +60,9 @@ describe("useUserBalance", () => {
     client = createQueryClient();
     client.setDefaultOptions({ queries: { ...client.getDefaultOptions().queries, retry: false } });
     apiFetch.mockReset();
-    privy.ready = true;
-    privy.authenticated = true;
-    privy.user = { id: ALICE };
+    session.ready = true;
+    session.authenticated = true;
+    session.userId = ALICE;
   });
 
   afterEach(() => {
@@ -126,8 +130,8 @@ describe("useUserBalance", () => {
   });
 
   it("asks for nothing while there is no signed-in account", async () => {
-    privy.user = null;
-    privy.authenticated = false;
+    session.userId = null;
+    session.authenticated = false;
     const { result } = renderHook(() => useUserBalance(), { wrapper });
 
     await act(async () => {});
@@ -141,7 +145,7 @@ describe("useUserBalance", () => {
     await waitFor(() => expect(result.current.balance).not.toBeNull());
     expect(client.getQueryData(userBalanceKey(ALICE))).toBeTruthy();
 
-    privy.user = { id: BOB };
+    session.userId = BOB;
     rerender();
 
     // Not merely unused: gone. Another account's holdings have no business
@@ -155,8 +159,8 @@ describe("useUserBalance", () => {
     const { result, rerender } = renderHook(() => useUserBalance(), { wrapper });
     await waitFor(() => expect(result.current.balance).not.toBeNull());
 
-    privy.user = null;
-    privy.authenticated = false;
+    session.userId = null;
+    session.authenticated = false;
     rerender();
 
     await waitFor(() => expect(client.getQueryData(userBalanceKey(ALICE))).toBeUndefined());

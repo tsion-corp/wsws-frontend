@@ -1,10 +1,14 @@
 "use client";
+import { useRouter } from "next/navigation";
+import { useAuthSession } from "@/hooks/use-auth-session";
 
-import { useState } from "react";
-import { usePrivy } from "@privy-io/react-auth";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ARKJET_KEYS } from "@/features/casino/hooks/use-arkjet";
 import { pollUnlessFailing } from "@/lib/query-poll";
+import { track } from "@/lib/analytics/mixpanel";
+import { GAME_FAILURE, reasonFor } from "@/lib/analytics/failure-reason";
+import { chickenReports } from "@/features/casino/lib/chicken-analytics";
 import {
   cashoutChicken,
   fetchActiveChicken,
@@ -16,7 +20,15 @@ import {
   stepChicken,
   type ChickenDifficulty,
   type ChickenSession,
+  ARKADE_CAMPAIGN_QUERY_KEY,
 } from "@/features/casino/lib/api/arkjet";
+import {
+  CHICKEN_SOCKET_CLOSED,
+  CHICKEN_SOCKET_RESYNC,
+  isChickenSession,
+  sendChickenCommand,
+  subscribeChickenTopic,
+} from "@/features/casino/lib/chicken/live-socket";
 import { chickenShineEvent } from "@/features/casino/lib/shine/arcade";
 import { reportShine } from "@/lib/shine";
 
@@ -36,11 +48,32 @@ function action(session: ChickenSession) {
   };
 }
 
+function shouldFallBackToHttp(error: unknown): boolean {
+  if (!error || typeof error !== "object" || !("code" in error)) return false;
+  const code = (error as { code?: unknown }).code;
+  return (
+    code === "SOCKET_COMMANDS_UNAVAILABLE" ||
+    code === "SOCKET_UNAVAILABLE" ||
+    code === "SOCKET_COMMAND_TIMEOUT"
+  );
+}
+
+async function socketFirst<T>(socketAction: () => Promise<T>, httpAction: () => Promise<T>) {
+  try {
+    return await socketAction();
+  } catch (error) {
+    if (!shouldFallBackToHttp(error)) throw error;
+    return httpAction();
+  }
+}
+
 export function useChicken() {
-  const { ready, authenticated, user, login } = usePrivy();
+  const { ready, authenticated, evmAddress, solanaAddress, profile } = useAuthSession();
+  const router = useRouter();
+  const login = () => router.push("/auth");
   const queryClient = useQueryClient();
   const [terminalResult, setTerminalResult] = useState<ChickenSession | null>(null);
-  const hasSession = ready && authenticated && Boolean(user?.id);
+  const hasSession = ready && authenticated && Boolean(evmAddress);
   const rules = useQuery({
     queryKey: KEYS.rules,
     queryFn: fetchChickenRules,
@@ -59,13 +92,14 @@ export function useChicken() {
     refetchOnWindowFocus: false,
   });
   const balance = useQuery({
-    queryKey: [...KEYS.balance, user?.id ?? null],
+    queryKey: [...KEYS.balance, evmAddress ?? null],
     queryFn: fetchArkjetBalance,
     enabled: hasSession,
     refetchInterval: pollUnlessFailing(30_000),
     staleTime: 30_000,
     retry: false,
   });
+  const playerId = balance.data?.playerId ?? null;
   const history = useQuery({
     queryKey: KEYS.history,
     queryFn: () => fetchChickenHistory(12),
@@ -73,20 +107,76 @@ export function useChicken() {
     staleTime: 2_000,
   });
 
-  const settle = async (session: ChickenSession) => {
-    await queryClient.cancelQueries({ queryKey: KEYS.active });
-    queryClient.setQueryData(KEYS.active, session.status === "active" ? session : null);
-    setTerminalResult(session.status === "active" ? null : session);
-    await Promise.all([
-      queryClient.invalidateQueries({ queryKey: KEYS.balance }),
-      queryClient.invalidateQueries({ queryKey: KEYS.history }),
-    ]);
-  };
-  const synchronize = async () => {
+  // What has already been reported about a round. The session is cumulative
+  // and arrives again on every socket frame and every resync, so without this
+  // one lane crossed would be reported on each of them.
+  const reported = useRef(new Set<string>());
+
+  const settle = useCallback(
+    (session: ChickenSession) => {
+      for (const report of chickenReports(session)) {
+        if (reported.current.has(report.key)) continue;
+        reported.current.add(report.key);
+        if (report.name === "chicken_round_started") track(report.name, report.props);
+        else if (report.name === "chicken_lane_advanced") track(report.name, report.props);
+        else if (report.name === "chicken_cashed_out") track(report.name, report.props);
+        else track("chicken_round_lost", report.props);
+      }
+      void queryClient.cancelQueries({ queryKey: KEYS.active });
+      queryClient.setQueryData(KEYS.active, session.status === "active" ? session : null);
+      setTerminalResult(session.status === "active" ? null : session);
+      if (session.status !== "active" || session.currentStep <= 1) {
+        void queryClient.invalidateQueries({ queryKey: KEYS.balance });
+      }
+      if (session.status !== "active") {
+        void queryClient.invalidateQueries({ queryKey: KEYS.history });
+        void queryClient.invalidateQueries({ queryKey: ARKADE_CAMPAIGN_QUERY_KEY });
+      }
+    },
+    [queryClient]
+  );
+  const synchronize = useCallback(async () => {
     const session = await fetchActiveChicken();
     queryClient.setQueryData(KEYS.active, session);
     if (session) setTerminalResult(null);
+  }, [queryClient]);
+
+  useEffect(() => {
+    // The server's id for this player, from the balance it already returns —
+    // see use-arkjet for why a client-derived id is wrong for players whose
+    // rows are still stored under their old Privy DID.
+    if (!hasSession || !playerId) return;
+    return subscribeChickenTopic(playerId, (frame) => {
+      if (frame.type === CHICKEN_SOCKET_CLOSED.type || frame.type === CHICKEN_SOCKET_RESYNC.type) {
+        void synchronize();
+        return;
+      }
+      if (!isChickenSession(frame.data)) return;
+      const session = frame.data;
+      const current = queryClient.getQueryData<ChickenSession | null>(KEYS.active);
+      if (current?.sessionId === session.sessionId && current.version > session.version) {
+        return;
+      }
+      settle(session);
+    });
+  }, [hasSession, playerId, queryClient, settle, synchronize]);
+
+  const runAction = (
+    kind: "step" | "cashout",
+    session: ChickenSession
+  ): Promise<ChickenSession> => {
+    const input = action(session);
+    return socketFirst(
+      () =>
+        sendChickenCommand<ChickenSession>({
+          commandId: input.idempotencyKey,
+          action: kind,
+          ...input,
+        }),
+      () => (kind === "step" ? stepChicken(input) : cashoutChicken(input))
+    );
   };
+
   const start = useMutation({
     onMutate: () => queryClient.cancelQueries({ queryKey: KEYS.active }),
     mutationFn: async (input: {
@@ -94,31 +184,45 @@ export function useChicken() {
       currency: string;
       difficulty: ChickenDifficulty;
     }) => {
-      const started = await startChicken({
+      const startInput = {
         ...input,
         clientSeed: `web-${crypto.randomUUID()}`,
         idempotencyKey: crypto.randomUUID(),
-      });
+      };
+      const started = await socketFirst(
+        () =>
+          sendChickenCommand<ChickenSession>({
+            commandId: startInput.idempotencyKey,
+            action: "start",
+            ...startInput,
+          }),
+        () => startChicken(startInput)
+      );
 
       // Pilot Chicken starts the round and immediately requests the first crossing.
       return started.status === "active" && started.currentStep === 0
-        ? stepChicken(action(started))
+        ? runAction("step", started)
         : started;
     },
     onSuccess: settle,
-    onError: () => {
+    onError: (error, input) => {
+      track("chicken_round_failed", {
+        ...(Number.isFinite(Number(input.amount)) ? { amount_usd: Number(input.amount) } : {}),
+        difficulty: input.difficulty,
+        ...reasonFor(GAME_FAILURE, error),
+      });
       void Promise.all([synchronize(), queryClient.invalidateQueries({ queryKey: KEYS.balance })]);
     },
   });
   const step = useMutation({
     onMutate: () => queryClient.cancelQueries({ queryKey: KEYS.active }),
-    mutationFn: (session: ChickenSession) => stepChicken(action(session)),
+    mutationFn: (session: ChickenSession) => runAction("step", session),
     onSuccess: settle,
     onError: synchronize,
   });
   const cashout = useMutation({
     onMutate: () => queryClient.cancelQueries({ queryKey: KEYS.active }),
-    mutationFn: (session: ChickenSession) => cashoutChicken(action(session)),
+    mutationFn: (session: ChickenSession) => runAction("cashout", session),
     onSuccess: (settled) => {
       // The resolved cash-out, once per press. The history query re-serves
       // every cashed-out session it holds, so watching that list instead

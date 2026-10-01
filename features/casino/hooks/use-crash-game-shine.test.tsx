@@ -24,6 +24,7 @@ const api = vi.hoisted(() => ({
   createArkjetBet: vi.fn(),
   cancelArkjetBet: vi.fn(),
   cashoutArkjetBet: vi.fn(),
+  fetchArkjetSimulatedActivity: vi.fn(),
   fetchChickenRules: vi.fn(),
   fetchActiveChicken: vi.fn(),
   fetchChickenHistory: vi.fn(),
@@ -31,11 +32,48 @@ const api = vi.hoisted(() => ({
   stepChicken: vi.fn(),
   cashoutChicken: vi.fn(),
 }));
-vi.mock("@/features/casino/lib/api/arkjet", () => api);
-vi.mock("@privy-io/react-auth", () => ({
-  usePrivy: () => ({ ready: true, authenticated: true, user: { id: "user-1" }, login: vi.fn() }),
-  getAccessToken: vi.fn(async () => null),
-  getIdentityToken: vi.fn(async () => null),
+vi.mock("@/features/casino/lib/api/arkjet", () => ({
+  ...api,
+  ARKADE_CAMPAIGN_QUERY_KEY: ["casino", "arkade", "campaign"],
+}));
+// Both games try the live socket first and fall back to HTTP when it is not
+// there. The socket is not what these tests are about, so it answers "not
+// available" and every command lands on the API fakes above.
+const socketDown = vi.hoisted(() => () => Promise.reject({ code: "SOCKET_UNAVAILABLE" }));
+vi.mock("@/features/casino/lib/arkjet/live-socket", () => ({
+  ARKJET_SOCKET_CLOSED: { type: "__closed" },
+  ARKJET_SOCKET_READY: { type: "__ready" },
+  ARKJET_SOCKET_RESYNC: { type: "__resync" },
+  isArkjetBet: (value: unknown) => Boolean(value && typeof value === "object" && "betId" in value),
+  isArkjetRound: (value: unknown) =>
+    Boolean(value && typeof value === "object" && "roundId" in value && "sequence" in value),
+  isArkjetSimulatedActivityFeed: (value: unknown) =>
+    Boolean(value && typeof value === "object" && "isSimulated" in value && "items" in value),
+  sendArkjetCommand: socketDown,
+  subscribeArkjetTopics: () => () => undefined,
+}));
+vi.mock("@/features/casino/lib/chicken/live-socket", () => ({
+  CHICKEN_SOCKET_CLOSED: { type: "__closed" },
+  CHICKEN_SOCKET_READY: { type: "__ready" },
+  CHICKEN_SOCKET_RESYNC: { type: "__resync" },
+  isChickenSession: (value: unknown) =>
+    Boolean(value && typeof value === "object" && "sessionId" in value),
+  sendChickenCommand: socketDown,
+  subscribeChickenTopic: () => () => undefined,
+}));
+// The hooks read the Decane session, not Privy; the address is the identity
+// their queries are keyed on.
+vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn() }) }));
+vi.mock("@/hooks/use-auth-session", () => ({
+  useAuthSession: () => ({
+    ready: true,
+    authenticated: true,
+    userId: "user-1",
+    evmAddress: "0x00000000000000000000000000000000000000aA",
+    solanaAddress: null,
+    profile: { name: "u1", email: "", avatarSeed: "u1" },
+    logout: vi.fn(),
+  }),
 }));
 
 import { useArkjet } from "@/features/casino/hooks/use-arkjet";

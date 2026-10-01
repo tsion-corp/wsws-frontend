@@ -18,10 +18,28 @@ vi.mock("next-intl", () => ({
 }));
 
 let privyUser: User | null = null;
-vi.mock("@privy-io/react-auth", () => ({
-  usePrivy: () => ({ user: privyUser }),
-  getAccessToken: vi.fn(),
-  getIdentityToken: vi.fn(),
+// The topbar reads the session through the Decane-backed seam; the profile is
+// derived from the Privy-shaped test user with the same helper the app used to.
+vi.mock("@/hooks/use-auth-session", async () => {
+  const { deriveProfile, getWalletAddress } = await import("@/lib/user");
+  return {
+    useAuthSession: () => ({
+      ready: true,
+      authenticated: privyUser !== null,
+      evmAddress: privyUser ? getWalletAddress(privyUser, "ethereum") : null,
+      solanaAddress: privyUser ? getWalletAddress(privyUser, "solana") : null,
+      profile: deriveProfile(privyUser),
+      logout: vi.fn(),
+    }),
+  };
+});
+
+// The name the shell shows is the Ark ID when the wallet has one. The lookup
+// behind it needs a query client; these tests are about the chrome, so the
+// answer is stubbed and one test flips it.
+const arkName = vi.hoisted(() => ({ value: null as string | null }));
+vi.mock("@/hooks/use-ark-name", () => ({
+  useArkName: () => arkName.value,
 }));
 
 let pathname = "/portfolio";
@@ -63,12 +81,30 @@ function tourControls() {
   };
 }
 
+// The account face reads the player's square profile. These cover the rail
+// and its chrome, not where the picture comes from, so the read is stubbed
+// out: null is the ordinary answer and leaves the seeded artwork in place.
+vi.mock("@/hooks/use-square-avatar", () => ({
+  useSquareAvatar: () => null,
+  useSquareSeed: () => "seed",
+}));
+
 describe("Topbar tour button", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     privyUser = null;
     pathname = "/portfolio";
     render(<Topbar onOpenAccount={() => {}} />);
+  });
+
+  it("names the account by its Ark ID when the wallet holds one", () => {
+    arkName.value = "signor.ark";
+    try {
+      render(<Topbar onOpenAccount={() => {}} />);
+      expect(screen.getByText("signor.ark")).toBeInTheDocument();
+    } finally {
+      arkName.value = null;
+    }
   });
 
   it("puts the desktop circle in the right-hand cluster wearing the bell treatment", () => {
@@ -138,5 +174,14 @@ describe("Topbar chrome", () => {
     expect(bar.className).toContain("bg-[url('/rollout/chrome/topbar-starburst.svg')]");
     expect(bar.className).toContain("bg-cover");
     expect(screen.getByRole("button", { name: "Account" })).toBeInTheDocument();
+  });
+
+  it("keeps the account controls in the app topbar on ArkBall", () => {
+    pathname = "/casino/arkball";
+    const { container } = render(<Topbar onOpenAccount={() => {}} />);
+    expect(container.firstElementChild).toContainElement(
+      screen.getByRole("button", { name: "Account" })
+    );
+    expect(screen.queryByRole("link", { name: "Balance $1.17" })).not.toBeInTheDocument();
   });
 });

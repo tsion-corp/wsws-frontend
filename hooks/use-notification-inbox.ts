@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo } from "react";
 import { useInfiniteQuery, useQueryClient, type InfiniteData } from "@tanstack/react-query";
-import { usePrivy } from "@privy-io/react-auth";
+import { useAuthSession } from "@/hooks/use-auth-session";
 import { apiFetch } from "@/lib/api";
 import { unwrap } from "@/lib/api/envelope";
 import { NOTIFICATION_ROUTES } from "@/lib/notifications/routes";
@@ -120,8 +120,7 @@ export interface NotificationInbox {
 }
 
 export function useNotificationInbox(): NotificationInbox {
-  const { user } = usePrivy();
-  const userId = user?.id ?? null;
+  const { userId } = useAuthSession();
   const queryClient = useQueryClient();
   const queryKey = useMemo(() => notificationInboxKey(userId), [userId]);
 

@@ -6,13 +6,15 @@ import { Sidebar } from "@/components/layout/sidebar";
 import { markKnownUser } from "@/lib/known-user";
 import { Topbar } from "@/components/layout/topbar";
 import { AccountModal } from "@/components/layout/modals/account-modal";
+import { ShineSheet } from "@/components/shine/shine-sheet";
 import { CurvedTabBar } from "@/components/layout/curved-tab-bar";
 import { ConnectionBanner } from "@/components/layout/connection-banner";
 import { SupportButton } from "@/components/layout/support-button";
 import { BroadcastDock } from "@/components/broadcast/broadcast-dock";
 import { ModalShell } from "@/components/ui/modal-shell";
+import { ModalLoading } from "@/components/layout/modals/modal-loading";
 import { PortfolioFab } from "@/features/portfolio/components/portfolio-fab";
-import { InviteFriendsModal, useClaimReferralFromLink } from "@/features/referrals";
+import { useClaimReferralFromLink } from "@/features/referrals";
 import { usePrefetchDepositCatalog } from "@/hooks/use-catalog-prefetch";
 import { useAppNavigate } from "@/hooks/use-app-navigate";
 import type { NavItem } from "@/components/layout/nav-items";
@@ -25,13 +27,12 @@ import type { SectionId } from "@/lib/sections";
 // quick-action dial is opened.
 const FundsModal = dynamic(
   () => import("@/features/funds/components/funds-modal").then((m) => m.FundsModal),
-  { ssr: false }
+  { ssr: false, loading: () => <ModalLoading /> }
 );
 const WithdrawModal = dynamic(
   () => import("@/features/funds/components/withdraw-modal").then((m) => m.WithdrawModal),
-  { ssr: false }
+  { ssr: false, loading: () => <ModalLoading /> }
 );
-
 interface DashboardShellProps {
   nav: NavItem[];
   activeSection: SectionId;
@@ -49,15 +50,15 @@ interface DashboardShellProps {
 // there and otherwise navigates to /dashboard#id first.
 export function DashboardShell({ nav, activeSection, children }: DashboardShellProps) {
   const [accountOpen, setAccountOpen] = useState(false);
+  // Held by the shell, not the account modal: that modal closes on the way to
+  // this one, and a sheet rendered inside it would close with it.
+  const [shineOpen, setShineOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   // Funding from the phone tab bar's round button. The shell owns this one so
   // the action works on every page, not just the dashboard, which keeps its own
   // copy for the balance card and the empty states.
   const [fundsOpen, setFundsOpen] = useState(false);
   const [withdrawOpen, setWithdrawOpen] = useState(false);
-  // The marquee's invite item opens the same Invite Friends modal the account
-  // menu reaches; the shell owns an instance so the item works on every page.
-  const [inviteOpen, setInviteOpen] = useState(false);
 
   // Anyone rendering the shell has an account, including sessions that
   // predate the flag — so the landing page can greet them with "Log in".
@@ -99,7 +100,6 @@ export function DashboardShell({ nav, activeSection, children }: DashboardShellP
 
         {children}
       </main>
-
       {/* One sentence for the whole app when the server is unreachable — see
           the note in the component for why it is not one per panel. */}
       <ConnectionBanner />
@@ -118,11 +118,14 @@ export function DashboardShell({ nav, activeSection, children }: DashboardShellP
         onOpenWithdraw={() => setWithdrawOpen(true)}
       />
 
-      <InviteFriendsModal open={inviteOpen} onClose={() => setInviteOpen(false)} />
-
       <ModalShell open={accountOpen} onClose={() => setAccountOpen(false)}>
-        <AccountModal onClose={() => setAccountOpen(false)} />
+        <AccountModal
+          onClose={() => setAccountOpen(false)}
+          onOpenShine={() => setShineOpen(true)}
+        />
       </ModalShell>
+
+      <ShineSheet open={shineOpen} onClose={() => setShineOpen(false)} />
 
       <ModalShell open={fundsOpen} onClose={() => setFundsOpen(false)} size="lg">
         <FundsModal onClose={() => setFundsOpen(false)} />
