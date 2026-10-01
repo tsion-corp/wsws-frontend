@@ -223,7 +223,7 @@ function BetSlip({
   const queryClient = useQueryClient();
   const { ready, authenticated } = useAuthSession();
   const funding = useBookFunding();
-  const [stake, setStake] = useState("0.10");
+  const [stake, setStake] = useState("10");
   const [phase, setPhase] = useState<BetPhase>("idle");
   const deferredStake = useDeferredValue(stake);
   const stakeE6 = stakeToE6(deferredStake);
