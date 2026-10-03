@@ -304,7 +304,7 @@ export function ChessLobbyFrame({ source }: { source: string }) {
   const { ready, authenticated, evmAddress, solanaAddress, profile, logout } = useAuthSession();
   const wallet = useCasinoWallet();
   const frameRef = useRef<HTMLIFrameElement>(null);
-  const authRedirectingRef = useRef(false);
+  const signingOutRef = useRef(false);
   const requireSession = useRequireSession();
   // Read inside the frame's listeners, which are installed once per document.
   const sessionRef = useRef({ authenticated, requireSession });
@@ -824,20 +824,13 @@ export function ChessLobbyFrame({ source }: { source: string }) {
         }
       }
       if (unauthorized) {
-        // The backend renders the play lobby only for a session. A visitor
-        // without one is asked to sign in here; only a refused session is
-        // signed out.
-        if (!sessionRef.current.authenticated) {
-          setFrameReady(false);
-          setNeedsSignIn(true);
-          return;
-        }
+        // The backend renders the play lobby only for a session, so ask for a
+        // sign-in here. A session the backend refused is signed out first.
         setFrameReady(false);
-        if (!authRedirectingRef.current) {
-          authRedirectingRef.current = true;
-          void logout()
-            .catch(() => undefined)
-            .finally(() => router.replace("/auth"));
+        setNeedsSignIn(true);
+        if (sessionRef.current.authenticated && !signingOutRef.current) {
+          signingOutRef.current = true;
+          void logout().catch(() => undefined);
         }
         return;
       }
