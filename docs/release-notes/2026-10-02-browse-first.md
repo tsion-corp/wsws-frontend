@@ -84,6 +84,10 @@ longer shows Top up on a sell that is over the holding.
 
 ## Other changes
 
+- Every "Get started" on the landing page (hero, enter, closing call to
+  action, navbar) now opens the portfolio instead of the sign-in page; the
+  visitor signs in from the app when they first act. The navbar's "Log in",
+  shown to returning visitors, still opens the sign-in page.
 - The interests step is gone. `/interests` redirects to the dashboard, and
   the dashboard's sections are in one fixed order for everyone: the balance
   cards, Arkade, Join the Conversation, Prediction, Real assets, Memecoins,
