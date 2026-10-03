@@ -372,7 +372,7 @@ describe("ChessLobbyFrame", () => {
     expect(fundedComputer.start).not.toHaveBeenCalled();
   });
 
-  it("clears an expired session and opens the shared login page", async () => {
+  it("clears an expired session and asks for a sign-in on the same page", async () => {
     render(<ChessLobbyFrame source="/api/chess/play" />);
 
     const frame = screen.getByTitle<HTMLIFrameElement>("Ark Chess");
@@ -385,10 +385,8 @@ describe("ChessLobbyFrame", () => {
     fireEvent.load(frame);
 
     expect(frame).toHaveClass("opacity-0");
-    await waitFor(() => {
-      expect(auth.logout).toHaveBeenCalledOnce();
-      expect(navigation.replace).toHaveBeenCalledWith("/auth");
-    });
+    await waitFor(() => expect(auth.logout).toHaveBeenCalledOnce());
+    expect(navigation.replace).not.toHaveBeenCalled();
   });
 
   it("keeps backend navigation inside the frame for sandbox-safe promotion", () => {
