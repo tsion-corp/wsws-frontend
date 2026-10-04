@@ -14,7 +14,7 @@ import { CategoryEventRow } from "./category-event-row";
 import { CategoryBetSidebar } from "./category-market-shared";
 import { HorizontalNavRail } from "./horizontal-nav-rail";
 import { PredictionBetSidebarFrame } from "./prediction-bet-sidebar";
-import { PredictionPositions } from "./prediction-positions";
+import { PredictionPositions, shouldShowPolymarketPositions } from "./prediction-positions";
 import { PredictionCategoryNav, type PredictionFeedFilter } from "./prediction-category-nav";
 
 const FeaturedLocalMarkets = dynamic(
@@ -201,9 +201,11 @@ export function DiscoveryMarketsFeed({
             this page to check an open bet, claim a win or cash out should not
             have to scroll a feed to find it. The panel is its own card, so it
             takes the section's gutter rather than the list's full-bleed rows. */}
-        <div className="mx-auto w-full max-w-[1350px] px-4 pb-7 sm:pb-9 lg:px-6">
-          <PredictionPositions controller={positionsCtl} />
-        </div>
+        {shouldShowPolymarketPositions(positionsCtl.positions) ? (
+          <div className="mx-auto w-full max-w-[1350px] px-4 pb-7 sm:pb-9 lg:px-6">
+            <PredictionPositions controller={positionsCtl} />
+          </div>
+        ) : null}
 
         <section aria-label={`${label} markets`} className="mx-auto w-full max-w-[1350px] pb-16">
           {catalog.loading ? (
