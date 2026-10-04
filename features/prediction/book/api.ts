@@ -103,6 +103,8 @@ export interface BookBoardEvent {
   sport: BookSport;
   country: BookEntity;
   league: BookEntity;
+  trendingRank: number | null;
+  primaryMarketId: string | null;
   participants: Array<{ name: string; imageUrl: string | null }>;
   imageUrl: string | null;
   markets: BookBoardMarket[];

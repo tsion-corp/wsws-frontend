@@ -49,6 +49,9 @@ vi.mock("../house-slip-store", () => ({
     selectedSide: () => undefined,
   }),
 }));
+vi.mock("./featured-local-markets", () => ({
+  FeaturedLocalMarkets: () => null,
+}));
 // useMoney reaches for the FX query, which needs a QueryClient this suite does
 // not stand up. The panel only formats with it, so a fixed formatter is enough.
 vi.mock("@/components/ui/currency-select", () => ({

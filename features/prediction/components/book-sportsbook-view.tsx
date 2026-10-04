@@ -30,7 +30,7 @@ import {
 } from "@/features/prediction/components/prediction-bet-sidebar";
 import { SportIcon } from "@/features/prediction/sportsbook/components/sport-icon";
 
-interface Pick {
+export interface BookPick {
   event: BookBoardEvent;
   market: BookBoardMarket;
   outcome: BookOutcome;
@@ -70,7 +70,7 @@ function OutcomeButton({
   market: BookBoardMarket;
   outcome: BookOutcome;
   selected: boolean;
-  onPick: (pick: Pick) => void;
+  onPick: (pick: BookPick) => void;
 }) {
   return (
     <button
@@ -110,8 +110,8 @@ function EventRow({
 }: {
   event: BookBoardEvent;
   market: BookBoardMarket;
-  pick: Pick | null;
-  onPick: (pick: Pick) => void;
+  pick: BookPick | null;
+  onPick: (pick: BookPick) => void;
 }) {
   const time = eventTime(event.startsAt);
   const outcomes = market.outcomes.filter((outcome) => !outcome.hidden).slice(0, 4);
@@ -162,7 +162,7 @@ function BetSlip({
   onAccepted,
   onBusyChange,
 }: {
-  pick: Pick;
+  pick: BookPick;
   onClear: () => void;
   onAccepted: () => void;
   onBusyChange: (busy: boolean) => void;
@@ -171,7 +171,7 @@ function BetSlip({
   const queryClient = useQueryClient();
   const { ready, authenticated } = useAuthSession();
   const funding = useBookFunding();
-  const [stake, setStake] = useState("0.10");
+  const [stake, setStake] = useState("10");
   const [phase, setPhase] = useState<BetPhase>("idle");
   const deferredStake = useDeferredValue(stake);
   const stakeE6 = stakeToE6(deferredStake);
@@ -450,12 +450,12 @@ function MyBookBets({ enabled }: { enabled: boolean }) {
   );
 }
 
-function BookBetPanel({
+export function BookBetPanel({
   pick,
   onClear,
   onClose,
 }: {
-  pick: Pick | null;
+  pick: BookPick | null;
   onClear: () => void;
   onClose?: () => void;
 }) {
@@ -498,7 +498,7 @@ export function BookSportsbookView() {
   const [country, setCountry] = useState("");
   const [league, setLeague] = useState("");
   const [offset, setOffset] = useState(0);
-  const [pick, setPick] = useState<Pick | null>(null);
+  const [pick, setPick] = useState<BookPick | null>(null);
   const [desktopSlipOpen, setDesktopSlipOpen] = useState(false);
   const [mobileSlipOpen, setMobileSlipOpen] = useState(false);
   const capabilities = useQuery({
@@ -544,7 +544,7 @@ export function BookSportsbookView() {
     setOffset(0);
   }
 
-  function selectPick(nextPick: Pick) {
+  function selectPick(nextPick: BookPick) {
     setPick(nextPick);
     if (window.matchMedia("(min-width: 1280px)").matches) setDesktopSlipOpen(true);
     else setMobileSlipOpen(true);
