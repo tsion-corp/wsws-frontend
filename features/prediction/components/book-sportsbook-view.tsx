@@ -28,10 +28,6 @@ import {
   PredictionBetPanel,
   PredictionBetSidebarFrame,
 } from "@/features/prediction/components/prediction-bet-sidebar";
-import {
-  MarketSelector,
-  type MarketOption,
-} from "@/features/prediction/sportsbook/components/market-toolbar";
 import { SportIcon } from "@/features/prediction/sportsbook/components/sport-icon";
 
 interface Pick {
@@ -61,23 +57,6 @@ function eventTime(startsAt: number): { day: string; time: string } {
       hour12: false,
     }).format(date),
   };
-}
-
-function marketKey(market: BookBoardMarket): string {
-  return `title:${market.title.trim().toLowerCase().replaceAll(/\s+/gu, " ")}`;
-}
-
-function collectMarketOptions(events: BookBoardEvent[]): MarketOption[] {
-  const options = new Map<string, MarketOption>();
-  for (const event of events) {
-    for (const market of event.markets) {
-      if (!market.hidden && market.state === "active") {
-        const key = marketKey(market);
-        options.set(key, { key, label: market.title });
-      }
-    }
-  }
-  return [...options.values()];
 }
 
 function OutcomeButton({
@@ -148,15 +127,11 @@ function EventRow({
             <SportIcon sport={event.sport.slug} name={event.sport.name} className="size-4" />
             <span className="ml-1 truncate font-semibold text-[#adadad]">{event.league.name}</span>
           </div>
-          <div className="flex min-w-0 flex-col gap-1.5">
-            {event.participants.slice(0, 2).map((participant, index) => (
-              <p key={`${participant.name}:${index}`} className="flex min-w-0 items-center">
-                <ParticipantPortrait name={participant.name} imageUrl={participant.imageUrl} />
-                <span className="ml-2 truncate text-[14px] font-semibold text-white min-[1280px]:text-[16px]">
-                  {participant.name}
-                </span>
-              </p>
-            ))}
+          <div className="flex min-w-0 items-center">
+            <ParticipantPortrait name={market.title} imageUrl={market.imageUrl} />
+            <span className="ml-2 line-clamp-2 text-[14px] leading-5 font-semibold text-white min-[1280px]:text-[16px]">
+              {market.title}
+            </span>
           </div>
         </div>
 
@@ -523,7 +498,6 @@ export function BookSportsbookView() {
   const [country, setCountry] = useState("");
   const [league, setLeague] = useState("");
   const [offset, setOffset] = useState(0);
-  const [selectedMarket, setSelectedMarket] = useState("");
   const [pick, setPick] = useState<Pick | null>(null);
   const [desktopSlipOpen, setDesktopSlipOpen] = useState(false);
   const [mobileSlipOpen, setMobileSlipOpen] = useState(false);
@@ -551,28 +525,23 @@ export function BookSportsbookView() {
     staleTime: 10_000,
     refetchInterval: 30_000,
   });
-  const marketOptions = collectMarketOptions(board.data?.events ?? []);
-  const selectedMarketKey = marketOptions.some(({ key }) => key === selectedMarket)
-    ? selectedMarket
-    : (marketOptions[0]?.key ?? "");
-  const events = (board.data?.events ?? []).flatMap((event) => {
-    const market = event.markets.find((item) => marketKey(item) === selectedMarketKey);
-    return market ? [{ event, market }] : [];
-  });
+  const markets = (board.data?.events ?? []).flatMap((event) =>
+    event.markets
+      .filter((market) => !market.hidden && market.state === "active")
+      .map((market) => ({ event, market }))
+  );
 
   function selectSport(nextSport: string) {
     setSport(nextSport);
     setCountry("");
     setLeague("");
     setOffset(0);
-    setSelectedMarket("");
   }
 
   function selectLeague(nextCountry: string, nextLeague: string) {
     setCountry(nextCountry);
     setLeague(nextLeague);
     setOffset(0);
-    setSelectedMarket("");
   }
 
   function selectPick(nextPick: Pick) {
@@ -674,13 +643,11 @@ export function BookSportsbookView() {
 
           <div className="grid grid-cols-[minmax(0,1fr)_54%] items-center border-b border-white/[0.06] px-3 py-2 min-[1280px]:grid-cols-[minmax(0,1fr)_28rem] min-[1280px]:px-5">
             <span className="text-[11px] font-semibold tracking-wide text-[#646a75] uppercase">
-              Events
+              Markets
             </span>
-            <MarketSelector
-              options={marketOptions}
-              selectedKey={selectedMarketKey}
-              onChange={setSelectedMarket}
-            />
+            <span className="text-center text-[11px] font-semibold tracking-wide text-[#646a75] uppercase">
+              Outcomes
+            </span>
           </div>
 
           {navigation.isLoading || board.isLoading ? (
@@ -700,10 +667,10 @@ export function BookSportsbookView() {
                 Try again
               </button>
             </div>
-          ) : events.length ? (
-            events.map(({ event, market }) => (
+          ) : markets.length ? (
+            markets.map(({ event, market }) => (
               <EventRow
-                key={event.id}
+                key={`${event.id}:${market.id}`}
                 event={event}
                 market={market}
                 pick={pick}
@@ -716,11 +683,9 @@ export function BookSportsbookView() {
             </div>
           )}
 
-          {events.length ? (
+          {markets.length ? (
             <footer className="flex items-center justify-between border-t border-white/[0.06] px-4 py-3">
-              <span className="text-[10px] text-[#7e7e7e]">
-                {board.data?.total ?? events.length} events
-              </span>
+              <span className="text-[10px] text-[#7e7e7e]">{markets.length} markets</span>
               <div className="flex gap-2">
                 <button
                   type="button"
